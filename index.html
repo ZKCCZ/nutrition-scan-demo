@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f6f1" />
+    <meta name="description" content="拍一下，先看懂这一顿。营养成分表演示工具。" />
+    <title>一口清楚 · 营养拍照 Demo</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">一</div>
+        <div>
+          <p class="eyebrow">NUTRI SNAP · DEMO</p>
+          <p class="brand-name">一口清楚</p>
+        </div>
+        <span class="status-pill"><span class="status-dot"></span>演示版</span>
+      </header>
+
+      <section id="homeView" class="view home-view" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+          <p class="kicker">把包装上的数字，变成这一顿的答案</p>
+          <h1 id="heroTitle">拍一下，<br /><em>先看懂</em>这一顿。</h1>
+          <p class="hero-subtitle">拍营养成分表，输入实际吃了多少克，就能看到本次摄入的能量和营养素。</p>
+        </div>
+
+        <div class="capture-card">
+          <div class="camera-orbit" aria-hidden="true">
+            <div class="camera-glyph"><span></span></div>
+            <span class="orbit-dot orbit-dot-one"></span>
+            <span class="orbit-dot orbit-dot-two"></span>
+          </div>
+          <p class="capture-title">准备好包装上的营养表了吗？</p>
+          <p class="capture-caption">演示版只在本页处理图片，不会上传。</p>
+          <label class="primary-button" for="photoInput">
+            <span class="button-icon">＋</span>
+            拍照 / 从相册选择
+          </label>
+          <input id="photoInput" class="visually-hidden" type="file" accept="image/*" capture="environment" />
+          <button id="demoButton" class="secondary-button" type="button">
+            <span class="sparkle">✦</span>
+            体验一份模拟结果
+          </button>
+          <p class="privacy-note"><span aria-hidden="true">⌁</span> 图片只在本机演示，明天接入 API 后再启用真实识别</p>
+        </div>
+
+        <div class="how-it-works" aria-label="使用流程">
+          <div class="step"><span>01</span><p>拍营养表</p></div>
+          <div class="step-line"></div>
+          <div class="step"><span>02</span><p>确认克数</p></div>
+          <div class="step-line"></div>
+          <div class="step"><span>03</span><p>看懂这一顿</p></div>
+        </div>
+      </section>
+
+      <section id="scanView" class="view scan-view is-hidden" aria-live="polite" aria-labelledby="scanTitle">
+        <button id="cancelScanButton" class="back-button" type="button">‹ <span>换一张</span></button>
+        <div class="scan-heading">
+          <p class="kicker">本地演示 · 不调用 API</p>
+          <h2 id="scanTitle">正在读取营养信息<span class="loading-dots" aria-hidden="true"><i></i><i></i><i></i></span></h2>
+          <p id="scanStatus">先看看图片，再把数字整理成这一顿。</p>
+        </div>
+        <div class="scan-preview-wrap">
+          <div class="scan-preview-frame">
+            <img id="scanPreview" alt="待识别的营养成分表" />
+            <div class="scan-scanline" aria-hidden="true"></div>
+            <span class="preview-badge">仅本机预览</span>
+          </div>
+        </div>
+        <div class="progress-track" role="progressbar" aria-label="模拟识别进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18">
+          <span id="progressBar"></span>
+        </div>
+        <div class="scan-tips">
+          <span class="tip-icon">◎</span>
+          <p>真实接入 API 后，这里会解析你拍到的营养成分表；现在先用一份可编辑的示例数据带你走完流程。</p>
+        </div>
+      </section>
+
+      <section id="resultView" class="view result-view is-hidden" aria-labelledby="resultTitle">
+        <div class="result-topline">
+          <button id="retakeTopButton" class="back-button" type="button">‹ <span>重新拍</span></button>
+          <span class="demo-badge">演示数据 · 可编辑</span>
+        </div>
+
+        <div class="result-intro">
+          <div class="result-photo-mini"><img id="resultPreview" alt="本次记录的图片" /></div>
+          <div>
+            <p class="kicker">本顿营养估算</p>
+            <h2 id="resultTitle">谷物脆片</h2>
+            <p id="resultSubtitle" class="muted-copy">请核对标签，数据可以直接修改。</p>
+          </div>
+        </div>
+
+        <div class="calorie-card">
+          <div class="calorie-card-top">
+            <div>
+              <p class="card-label">本次摄入能量</p>
+              <p class="calorie-value"><strong id="calorieValue">303</strong><span>kcal</span></p>
+              <p class="calorie-kj"><span id="calorieKjValue">1,268</span> kJ · 按 <span id="amountLabelTop">65</span>g 计算</p>
+            </div>
+            <div class="calorie-ring" aria-hidden="true"><span id="ringValue">65g</span></div>
+          </div>
+          <div class="amount-control">
+            <div class="amount-heading">
+              <label for="amountInput">实际吃了多少？</label>
+              <div class="amount-entry"><input id="amountInput" type="number" min="1" max="500" step="1" value="65" inputmode="decimal" /><span>g</span></div>
+            </div>
+            <input id="amountSlider" class="amount-slider" type="range" min="1" max="500" step="1" value="65" aria-label="实际食用量（克）" />
+            <div class="slider-scale" aria-hidden="true"><span>1g</span><span>100g</span><span>250g</span><span>500g</span></div>
+            <div class="stepper-row">
+              <button class="stepper-button" type="button" data-step="-5" aria-label="减少五克">−5g</button>
+              <span>拖动或输入，结果会实时更新</span>
+              <button class="stepper-button" type="button" data-step="5" aria-label="增加五克">＋5g</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-heading">
+          <div><p class="kicker">营养成分</p><h3>每 100g → 本次摄入</h3></div>
+          <span class="unit-note">按包装标签计算</span>
+        </div>
+        <div class="nutrient-grid">
+          <article class="nutrient-card energy-card"><div class="nutrient-top"><span class="nutrient-icon">◒</span><span>能量</span></div><strong id="energyKjResult">1,268 kJ</strong><small id="energyKjBase">1,950 kJ / 100g</small></article>
+          <article class="nutrient-card protein-card"><div class="nutrient-top"><span class="nutrient-icon">✦</span><span>蛋白质</span></div><strong id="proteinResult">4.9 g</strong><small id="proteinBase">7.5 g / 100g</small></article>
+          <article class="nutrient-card fat-card"><div class="nutrient-top"><span class="nutrient-icon">◌</span><span>脂肪</span></div><strong id="fatResult">15.7 g</strong><small id="fatBase">24.1 g / 100g</small></article>
+          <article class="nutrient-card carb-card"><div class="nutrient-top"><span class="nutrient-icon">⌁</span><span>碳水化合物</span></div><strong id="carbsResult">39.0 g</strong><small id="carbsBase">60 g / 100g</small></article>
+          <article class="nutrient-card sodium-card"><div class="nutrient-top"><span class="nutrient-icon">⊙</span><span>钠</span></div><strong id="sodiumResult">293 mg</strong><small id="sodiumBase">450 mg / 100g</small></article>
+          <article class="nutrient-card sugar-card"><div class="nutrient-top"><span class="nutrient-icon">◇</span><span>糖</span></div><strong id="sugarResult">11.7 g</strong><small id="sugarBase">18 g / 100g</small></article>
+        </div>
+
+        <details class="comparison-card" open>
+          <summary><span><span class="summary-icon">≈</span> 同热量参考 <small>只比较能量，不代表营养等价</small></span><span class="chevron">⌄</span></summary>
+          <div class="comparison-content">
+            <div class="comparison-item"><span class="food-emoji">🍚</span><div><strong id="riceEquivalent">261g</strong><small>熟米饭 · 约等于</small></div></div>
+            <div class="comparison-divider"></div>
+            <div class="comparison-item"><span class="food-emoji">🥚</span><div><strong id="eggEquivalent">4.0个</strong><small>鸡蛋 · 约等于</small></div></div>
+          </div>
+        </details>
+
+        <details class="data-details">
+          <summary><span>修改每 100g 标签数据</span><span class="chevron">⌄</span></summary>
+          <p class="details-intro">演示时可以故意改一个数字，看看本次摄入如何重算。正式版会把模型读到的原文放在这里供你核对。</p>
+          <div class="edit-grid">
+            <label>能量 <span><input id="baseEnergyInput" type="number" min="0" step="1" value="1950" /> kJ</span></label>
+            <label>蛋白质 <span><input id="baseProteinInput" type="number" min="0" step="0.1" value="7.5" /> g</span></label>
+            <label>脂肪 <span><input id="baseFatInput" type="number" min="0" step="0.1" value="24.1" /> g</span></label>
+            <label>碳水 <span><input id="baseCarbsInput" type="number" min="0" step="0.1" value="60" /> g</span></label>
+            <label>糖 <span><input id="baseSugarInput" type="number" min="0" step="0.1" value="18" /> g</span></label>
+            <label>钠 <span><input id="baseSodiumInput" type="number" min="0" step="1" value="450" /> mg</span></label>
+          </div>
+        </details>
+
+        <div class="result-actions">
+          <button id="saveButton" class="primary-button" type="button"><span class="button-icon">✓</span> 保存本顿记录</button>
+          <button id="retakeButton" class="secondary-button" type="button">重新拍一张</button>
+        </div>
+        <p class="disclaimer"><span>ⓘ</span> 这是产品交互演示，当前结果是模拟数据，不作医疗建议。明天接入大模型 API 时，只需替换识别逻辑。</p>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+  </body>
+</html>

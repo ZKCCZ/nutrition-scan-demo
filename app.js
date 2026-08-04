@@ -30,6 +30,13 @@
   let amount = 65;
   let nutrition = { ...demoNutrition };
   let processingTimer;
+  let stageTimers = [];
+
+  function clearProcessingTimers() {
+    window.clearTimeout(processingTimer);
+    stageTimers.forEach((timer) => window.clearTimeout(timer));
+    stageTimers = [];
+  }
 
   function showView(view) {
     [homeView, scanView, resultView].forEach((item) => item.classList.add("is-hidden"));
@@ -57,7 +64,7 @@
   }
 
   function startDemo(url) {
-    window.clearTimeout(processingTimer);
+    clearProcessingTimers();
     updateImage(url);
     showView(scanView);
     progressBar.style.width = "8%";
@@ -70,13 +77,15 @@
       [1540, 100, "演示结果已准备好"],
     ];
     stages.forEach(([delay, progress, text]) => {
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         progressBar.style.width = `${progress}%`;
         progressTrack.setAttribute("aria-valuenow", String(progress));
         scanStatus.textContent = text;
       }, delay);
+      stageTimers.push(timer);
     });
     processingTimer = window.setTimeout(() => {
+      stageTimers = [];
       nutrition = { ...demoNutrition };
       resetBaseInputs();
       showView(resultView);
@@ -164,9 +173,9 @@
     reader.readAsDataURL(file);
   });
   $("demoButton").addEventListener("click", () => startDemo());
-  $("cancelScanButton").addEventListener("click", () => { window.clearTimeout(processingTimer); showView(homeView); });
-  $("retakeTopButton").addEventListener("click", () => { showView(homeView); photoInput.value = ""; });
-  $("retakeButton").addEventListener("click", () => { showView(homeView); photoInput.value = ""; });
+  $("cancelScanButton").addEventListener("click", () => { clearProcessingTimers(); showView(homeView); });
+  $("retakeTopButton").addEventListener("click", () => { clearProcessingTimers(); showView(homeView); photoInput.value = ""; });
+  $("retakeButton").addEventListener("click", () => { clearProcessingTimers(); showView(homeView); photoInput.value = ""; });
   amountSlider.addEventListener("input", () => { amountInput.value = amountSlider.value; recalculate(); });
   amountInput.addEventListener("input", recalculate);
   document.querySelectorAll("[data-step]").forEach((button) => button.addEventListener("click", () => {

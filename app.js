@@ -2,7 +2,7 @@
   "use strict";
 
   // 前端只请求同源接口，任何模型密钥都应只存在于服务端环境变量中。
-  // 接口约定：POST /api/analyze，multipart/form-data：image（图片）、context（用户补充说明）。
+  // 接口约定：POST /api/analyze，multipart/form-data：image（图片）、context（用户补充说明）、intakeGrams（本次明确摄入量，可选）。
   // 推荐响应：
   // {
   //   foodName, serving: { label, grams, count, scopeLabel },
@@ -15,6 +15,9 @@
   const API_PATH = String(window.NUTRI_API_ENDPOINT || "https://nutritican-demo-sqjzjsjfgi.cn-hangzhou.fcapp.run/api/analyze");
   const REQUEST_TIMEOUT_MS = 35000;
   const FALLBACK_DELAY_MS = 1200;
+  const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
+  const TARGET_UPLOAD_BYTES = 5.5 * 1024 * 1024;
+  const IMAGE_EXTENSIONS = /\.(?:jpe?g|png|webp|heic|heif)$/i;
 
   const demoAnalysis = {
     foodName: "谷物脆片",
@@ -61,9 +64,11 @@
   const toast = $("toast");
 
   let imageUrl = "";
+  let previewObjectUrl = "";
   let selectedFile = null;
   let selectionIsDemo = false;
   let mealContext = "";
+  let requestedIntakeGrams = null;
   let amount = 65;
   let maxAmount = 500;
   let serving = { ...demoAnalysis.serving };
@@ -73,6 +78,7 @@
   let processingTimers = [];
   let activeController = null;
   let analysisRun = 0;
+  let fileSelectionRun = 0;
 
   function isPlainObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -95,6 +101,78 @@
     }
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  function clampIntakeGrams(value) {
+    const parsed = optionalNumber(value);
+    if (parsed === null || parsed < 1 || parsed > 20000) return null;
+    return Math.round(parsed);
+  }
+
+  // Only infer a quantity from high-confidence wording.  A label such as
+  // “每100g” or “整袋100g” describes the package, not necessarily what was
+  // eaten this time, so it must not silently become the intake amount.
+  function parseRequestedIntakeGrams(text) {
+    const source = String(text || "").trim();
+    if (!source) return null;
+    const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了|吃掉了|食用了?)\s*整(?:袋|包)\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i);
+    if (fullPack) return clampIntakeGrams(fullPack[1]);
+    const patterns = [
+      /(?:^|[，,。；;\s])(?:本次|这次|实际|食用量|摄入量)\s*(?:实际\s*)?(?:是|为|摄入了?|食用了?|吃了|吃掉了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+      /(?:^|[，,。；;\s])我(?:这次)?\s*(?:本次|这次|实际)?\s*(?:吃了|吃掉了|食用了?|摄入了?|用了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+      /(?:^|[，,。；;\s])(?:吃了|吃掉了|食用了?|摄入了?|用了)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+    ];
+    for (const pattern of patterns) {
+      const explicit = source.match(pattern);
+      if (explicit) return clampIntakeGrams(explicit[1]);
+    }
+    if (/^\s*\d+(?:\.\d+)?\s*(?:克|g)\s*$/i.test(source)) return clampIntakeGrams(source);
+    return null;
+  }
+
+  function isImageFile(file) {
+    if (!file) return false;
+    const type = String(file.type || "").toLowerCase();
+    return type.startsWith("image/") || IMAGE_EXTENSIONS.test(String(file.name || ""));
+  }
+
+  function loadImageElement(url) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("image decode failed"));
+      image.src = url;
+    });
+  }
+
+  async function compressImageIfNeeded(file) {
+    if (!file || file.size <= TARGET_UPLOAD_BYTES) return file;
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const image = await loadImageElement(sourceUrl);
+      const maxDimension = 2200;
+      const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+      canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("canvas unavailable");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      let quality = 0.84;
+      let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      while (blob && blob.size > TARGET_UPLOAD_BYTES && quality > 0.45) {
+        quality -= 0.08;
+        blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      }
+      if (!blob || blob.size > MAX_UPLOAD_BYTES) throw new Error("compression failed");
+      const baseName = String(file.name || "meal").replace(/\.[^.]+$/, "") || "meal";
+      return new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+    } catch (error) {
+      if (file.size <= MAX_UPLOAD_BYTES) return file;
+      throw new Error("这张照片太大，手机无法自动压缩，请换一张较小的图片");
+    } finally {
+      URL.revokeObjectURL(sourceUrl);
+    }
   }
 
   function firstDefined(object, keys) {
@@ -152,22 +230,33 @@
     return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   }
 
-  function updateImage(url) {
+  function revokePreviewUrl() {
+    if (previewObjectUrl) {
+      try { URL.revokeObjectURL(previewObjectUrl); } catch (_) { /* ignored */ }
+      previewObjectUrl = "";
+    }
+  }
+
+  function updateImage(url, ownsObjectUrl = false) {
+    if (previewObjectUrl && previewObjectUrl !== url) revokePreviewUrl();
     imageUrl = url || placeholderImage();
+    if (ownsObjectUrl) previewObjectUrl = imageUrl;
     contextPreview.src = imageUrl;
     scanPreview.src = imageUrl;
     resultPreview.src = imageUrl;
   }
 
-  function enterContext({ url, file, isDemo }) {
+  function enterContext({ url, file, isDemo, ownsObjectUrl = false }) {
     clearProcessing();
     analysisRun += 1;
     selectedFile = file || null;
     selectionIsDemo = Boolean(isDemo);
     mealContext = "";
+    requestedIntakeGrams = null;
     $("mealContext").value = "";
+    $("intakeGrams").value = "";
     $("contextPhotoBadge").textContent = selectionIsDemo ? "演示包装图" : "已选图片";
-    updateImage(url);
+    updateImage(url, ownsObjectUrl);
     showView(contextView);
   }
 
@@ -177,7 +266,10 @@
     selectedFile = null;
     selectionIsDemo = false;
     mealContext = "";
+    requestedIntakeGrams = null;
     photoInput.value = "";
+    revokePreviewUrl();
+    updateImage(placeholderImage());
     showView(homeView);
   }
 
@@ -227,6 +319,26 @@
     }
     $("riceEquivalent").textContent = givenText || "按能量约等于一份熟米饭";
     $("riceEquivalentDetail").textContent = detail;
+  }
+
+  function renderSliderScale() {
+    const min = number(amountSlider.min, 1);
+    const max = Math.max(min, number(amountSlider.max, 500));
+    const scale = document.querySelector(".slider-scale");
+    if (!scale) return;
+    const ticks = [min, 100, 250, max]
+      .filter((value, index, values) => value >= min && value <= max && values.indexOf(value) === index)
+      .sort((left, right) => left - right);
+    scale.replaceChildren();
+    ticks.forEach((tick, index) => {
+      const label = document.createElement("span");
+      const ratio = max === min ? 0 : ((tick - min) / (max - min)) * 100;
+      label.textContent = `${formatInteger(tick)}g`;
+      label.style.left = `${ratio}%`;
+      if (index === 0) label.style.transform = "none";
+      else if (index === ticks.length - 1) label.style.transform = "translateX(-100%)";
+      scale.appendChild(label);
+    });
   }
 
   function recalculate() {
@@ -279,7 +391,7 @@
     nutrition.sodium = optionalNumber($("baseSodiumInput").value);
   }
 
-  function normalizeAnalysis(payload) {
+  function normalizeAnalysis(payload, explicitIntakeGrams = null) {
     const raw = isPlainObject(payload && payload.data) ? payload.data : payload;
     if (!isPlainObject(raw)) throw new Error("识别服务返回的数据格式不正确");
 
@@ -301,10 +413,11 @@
       1,
     ));
     const intake = isPlainObject(raw.intake) ? raw.intake : {};
-    const intakeGrams = Math.max(1, number(
-      firstDefined(intake, ["grams", "totalGrams", "weightGrams"]) ?? firstDefined(raw, ["intakeGrams", "totalGrams"]),
+    const modelIntakeGrams = Math.max(1, number(
+      firstDefined(intake, ["grams", "totalGrams", "total_grams", "intakeGrams", "weightGrams", "weight_g"]) ?? firstDefined(raw, ["intakeGrams", "intake_grams", "totalGrams", "total_grams", "weightGrams", "weight_g"]),
       grams * count,
     ));
+    const intakeGrams = clampIntakeGrams(explicitIntakeGrams) || modelIntakeGrams;
     const servingLabel = String(
       firstDefined(rawServing, ["label", "name"]) || raw.servingLabel || `每份（${formatInteger(grams)}g）`,
     );
@@ -336,8 +449,13 @@
     };
   }
 
-  function applyAnalysis(analysis, source) {
+  function applyAnalysis(analysis, source, explicitIntakeGrams = null) {
     serving = { ...analysis.serving };
+    const forcedIntakeGrams = clampIntakeGrams(explicitIntakeGrams);
+    if (forcedIntakeGrams) {
+      serving.intakeGrams = forcedIntakeGrams;
+      serving.scopeLabel = `按本次约 ${formatInteger(forcedIntakeGrams)}g 估算`;
+    }
     nutrition = { ...analysis.nutritionPerServing };
     riceEquivalent = isPlainObject(analysis.riceEquivalent) ? { ...analysis.riceEquivalent } : {};
     evaluations = Array.isArray(analysis.evaluations) ? [...analysis.evaluations] : [];
@@ -345,6 +463,12 @@
     maxAmount = Math.max(500, Math.min(2000, Math.ceil(amount / 50) * 50));
     amountInput.max = String(maxAmount);
     amountSlider.max = String(maxAmount);
+    // Seed the editable controls before recalculate(). Otherwise that function
+    // reads the old HTML value (for example the demo's 65g) and overwrites the
+    // newly received or explicitly entered intake amount.
+    amountInput.value = String(Math.round(amount));
+    amountSlider.value = String(Math.round(Math.min(amount, maxAmount)));
+    renderSliderScale();
 
     $("resultTitle").textContent = analysis.foodName;
     $("resultSubtitle").textContent = mealContext
@@ -383,7 +507,7 @@
     });
   }
 
-  async function requestAnalysis(file, context) {
+  async function requestAnalysis(file, context, intakeGrams = null) {
     if (!file) throw new Error("请先选择一张图片");
     const controller = new AbortController();
     activeController = controller;
@@ -399,6 +523,8 @@
     const formData = new FormData();
     formData.append("image", file, file.name || "meal.jpg");
     formData.append("context", context);
+    const explicitIntakeGrams = clampIntakeGrams(intakeGrams);
+    if (explicitIntakeGrams) formData.append("intakeGrams", String(explicitIntakeGrams));
     formData.append("locale", "zh-CN");
 
     try {
@@ -439,14 +565,14 @@
 
     try {
       const analysis = selectionIsDemo
-        ? (await delay(FALLBACK_DELAY_MS), normalizeAnalysis(demoAnalysis))
-        : await requestAnalysis(selectedFile, mealContext);
+        ? (await delay(FALLBACK_DELAY_MS), normalizeAnalysis(demoAnalysis, requestedIntakeGrams))
+        : await requestAnalysis(selectedFile, mealContext, requestedIntakeGrams);
       if (run !== analysisRun) return;
       setProgress(100, selectionIsDemo ? "演示结果已准备好" : "识别结果已准备好");
       await delay(230);
       if (run !== analysisRun) return;
       processingTimers = [];
-      applyAnalysis(analysis, selectionIsDemo ? "demo" : "live");
+      applyAnalysis(analysis, selectionIsDemo ? "demo" : "live", requestedIntakeGrams);
       showView(resultView);
     } catch (error) {
       // A stale run means the user cancelled/replaced the request; do not let
@@ -492,23 +618,30 @@
     showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2400);
   }
 
-  photoInput.addEventListener("change", (event) => {
+  photoInput.addEventListener("click", () => {
+    // Clearing before opening the native picker lets Android fire `change`
+    // even when the user selects the same photo again.
+    photoInput.value = "";
+  });
+
+  photoInput.addEventListener("change", async (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    const selection = ++fileSelectionRun;
+    photoInput.value = "";
+    if (!isImageFile(file)) {
       showToast("请选择图片文件");
-      photoInput.value = "";
       return;
     }
-    if (file.size > 12 * 1024 * 1024) {
-      showToast("图片请控制在 12MB 以内");
-      photoInput.value = "";
-      return;
+    try {
+      const uploadFile = await compressImageIfNeeded(file);
+      if (selection !== fileSelectionRun) return;
+      const url = URL.createObjectURL(uploadFile);
+      enterContext({ url, file: uploadFile, isDemo: false, ownsObjectUrl: true });
+    } catch (error) {
+      if (selection !== fileSelectionRun) return;
+      showToast(error instanceof Error ? error.message : "图片读取失败，请换一张试试");
     }
-    const reader = new FileReader();
-    reader.onload = () => enterContext({ url: String(reader.result), file, isDemo: false });
-    reader.onerror = () => showToast("图片读取失败，请换一张试试");
-    reader.readAsDataURL(file);
   });
 
   $("demoButton").addEventListener("click", () => enterContext({ url: placeholderImage(), file: null, isDemo: true }));
@@ -516,6 +649,14 @@
   $("mealContextForm").addEventListener("submit", (event) => {
     event.preventDefault();
     mealContext = $("mealContext").value.trim();
+    const fieldIntake = clampIntakeGrams($("intakeGrams").value);
+    const parsedContextIntake = parseRequestedIntakeGrams(mealContext);
+    requestedIntakeGrams = fieldIntake || parsedContextIntake;
+    if ($("intakeGrams").value && !fieldIntake) {
+      showToast("克数请输入 1–20000 之间的数字");
+      $("intakeGrams").focus();
+      return;
+    }
     startAnalysis();
   });
   $("cancelScanButton").addEventListener("click", () => {
@@ -550,5 +691,6 @@
     showToast("已保存到本机（演示）");
   });
 
+  renderSliderScale();
   updateImage();
 })();

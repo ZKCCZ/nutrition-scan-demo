@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f6f1" />
     <meta name="description" content="拍一下，先看懂这一顿。营养成分表演示工具。" />
     <title>一口清楚 · 营养拍照 Demo</title>
-    <link rel="stylesheet" href="styles.css?v=1245d39" />
-    <script src="runtime-config.js?v=1245d39"></script>
-    <script defer src="app.js?v=1245d39"></script>
+    <link rel="stylesheet" href="styles.css?v=fix-20260805-1" />
+    <script src="runtime-config.js?v=fix-20260805-1"></script>
+    <script defer src="app.js?v=fix-20260805-1"></script>
   </head>
   <body>
     <main class="app-shell">
@@ -36,11 +36,10 @@
           </div>
           <p class="capture-title">准备好包装上的营养表了吗？</p>
           <p class="capture-caption">先拍包装或食物，再补一句你实际吃了多少。</p>
-          <label class="primary-button" for="photoInput">
-            <span class="button-icon">＋</span>
-            拍照 / 从相册选择
+          <label class="photo-picker">
+            <span class="primary-button"><span class="button-icon">＋</span>拍照 / 从相册选择</span>
+            <input id="photoInput" class="photo-input-overlay" type="file" accept="image/*" aria-label="拍照或从相册选择" />
           </label>
-          <input id="photoInput" class="visually-hidden" type="file" accept="image/*" capture="environment" />
           <button id="demoButton" class="secondary-button" type="button">
             <span class="sparkle">✦</span>
             体验一份模拟结果
@@ -73,6 +72,9 @@
         <form id="mealContextForm" class="context-form">
           <label for="mealContext">给一口清楚补充信息 <span>可不填</span></label>
           <textarea id="mealContext" rows="4" maxlength="240" placeholder="例如：这是全麦饼干，整袋 65g；我这次吃了半袋。&#10;或者：这是午饭的红烧肉，约 1 碗。"></textarea>
+          <label class="intake-label" for="intakeGrams">本次实际吃了多少克？ <span>可不填</span></label>
+          <div class="intake-input-wrap"><input id="intakeGrams" type="number" min="1" max="20000" step="1" inputmode="decimal" placeholder="请输入克数，例如 100" /><span>g</span></div>
+          <p class="intake-hint">如果你知道明确克数，填在这里会优先按这个数计算；“每100g”或包装总重不会被当成本次摄入量。</p>
           <p class="context-hint"><span aria-hidden="true">✦</span> 可写食物名、包装规格、吃了几份或几克；不确定也可以直接分析。</p>
           <button id="analyzeButton" class="primary-button" type="submit"><span class="button-icon">↗</span> 开始分析这一顿</button>
         </form>
@@ -133,7 +135,7 @@
               <div class="amount-entry"><input id="amountInput" type="number" min="1" max="500" step="1" value="65" inputmode="decimal" /><span>g</span></div>
             </div>
             <input id="amountSlider" class="amount-slider" type="range" min="1" max="500" step="1" value="65" aria-label="实际食用量（克）" />
-            <div class="slider-scale" aria-hidden="true"><span>1g</span><span>100g</span><span>250g</span><span>500g</span></div>
+            <div class="slider-scale" aria-hidden="true"><span data-tick="min">1g</span><span data-tick="100">100g</span><span data-tick="250">250g</span><span data-tick="max">500g</span></div>
             <div class="stepper-row">
               <button class="stepper-button" type="button" data-step="-5" aria-label="减少五克">−5g</button>
               <span>拖动或输入，结果会实时更新</span>

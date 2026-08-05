@@ -15,8 +15,9 @@ const SYSTEM_PROMPT = `你是“一口清楚”的中文食品图像与营养标
 对有效输入：
 1. 结合图片和用户补充信息判断“每份”是多少克，以及用户这次一共吃了几份。包装标签若是每100g，请换算成每份；用户说“半袋、两份、整包、约一碗”等时，以用户实际摄入为准。
 2. nutrition_per_serving 必须是单独“一份”的营养值；serving.count 和 intake.grams 代表用户本次的总摄入。能量优先给 kcal，包装写 kJ 时按 1 kcal = 4.184 kJ 换算。
-3. 写 2 到 3 条简短、日常、非医疗化的营养评价。不要诊断疾病、不要声称治疗效果；不确定时要诚实说明。
-4. 不要虚构品牌、包装规格或看不清的数值。看不清的营养字段可写 null。
+3. 如果用户消息中出现“本次明确摄入量：N g”，这是最高优先级的确定输入，必须把 intake.grams 写成 N；不要用包装的每份克数、每100g基准或模型猜测覆盖它。包装/标签的每份克数仍写在 serving.grams。
+4. 写 2 到 3 条简短、日常、非医疗化的营养评价。不要诊断疾病、不要声称治疗效果；不确定时要诚实说明。
+5. 不要虚构品牌、包装规格或看不清的数值。看不清的营养字段可写 null。
 
 只输出一个 JSON 对象，不要 Markdown、不要代码围栏。结构如下：
 {
@@ -65,10 +66,11 @@ async function handleAnalyze(request, env, url) {
 
   const image = form.get("image");
   const context = cleanText(form.get("context"), MAX_CONTEXT_LENGTH);
+  const requestedIntakeGrams = clampNumber(form.get("intakeGrams"), 1, 20000, null) || parseExplicitIntakeGrams(context);
   if (!image || typeof image.arrayBuffer !== "function") {
     return json({ error: "请先选择一张图片" }, 400, request, url);
   }
-  if (!String(image.type || "").startsWith("image/")) {
+  if (!isImageUpload(image)) {
     return json({ error: "请上传图片文件" }, 415, request, url);
   }
   if (image.size > MAX_IMAGE_BYTES) {
@@ -91,8 +93,8 @@ async function handleAnalyze(request, env, url) {
         content: [
           {
             type: "text",
-            text: context
-              ? `用户补充：${context}`
+            text: context || requestedIntakeGrams
+              ? `${context ? `用户补充：${context}` : "用户没有补充说明。"}${requestedIntakeGrams ? ` 用户在独立克数输入框明确填写：本次实际摄入 ${requestedIntakeGrams}g。此数值优先级最高。` : ""}`
               : "用户没有补充说明。请基于图片做谨慎判断；如果是菜肴，明确标注估算。",
           },
           { type: "image_url", image_url: { url: imageUrl } },
@@ -128,7 +130,7 @@ async function handleAnalyze(request, env, url) {
     return json({ error: "识别结果格式异常，请换一张更清晰的图片" }, 502, request, url);
   }
 
-  const output = normalizeModelOutput(modelJson);
+  const output = normalizeModelOutput(modelJson, requestedIntakeGrams);
   if (!output.valid) {
     return json({ error: output.rejectionMessage, code: "NOT_FOOD" }, 422, request, url);
   }
@@ -158,7 +160,7 @@ async function requestLuna(payload, env) {
   return response;
 }
 
-function normalizeModelOutput(raw) {
+function normalizeModelOutput(raw, requestedIntakeGrams = null) {
   const kind = cleanText(raw?.input_kind, 48).toLowerCase();
   if (!raw || raw.valid === false || kind === "not_food") {
     return {
@@ -173,7 +175,13 @@ function normalizeModelOutput(raw) {
   const sourceNutrition = asObject(raw.nutrition_per_serving || raw.nutritionPerServing || raw.nutrition);
   const grams = clampNumber(firstPresent(sourceServing, ["grams", "gram", "weight_g", "weightGrams"]), 1, 2000, 100);
   const count = clampNumber(firstPresent(sourceServing, ["count", "servings", "quantity"]), 1, 100, 1);
-  const intakeGrams = clampNumber(firstPresent(sourceIntake, ["grams", "total_grams", "totalGrams"]), 1, 20000, grams * count);
+  const modelIntakeGrams = clampNumber(
+    firstPresent(sourceIntake, ["grams", "total_grams", "totalGrams", "intakeGrams", "intake_grams", "weightGrams", "weight_g"]) ?? firstPresent(raw, ["intakeGrams", "intake_grams", "totalGrams", "total_grams", "weightGrams", "weight_g"]),
+    1,
+    20000,
+    grams * count,
+  );
+  const intakeGrams = clampNumber(requestedIntakeGrams, 1, 20000, modelIntakeGrams);
   const energyKcal = nullableNumber(firstPresent(sourceNutrition, ["energy_kcal", "energyKcal", "kcal", "calories"]));
   const energyKj = nullableNumber(firstPresent(sourceNutrition, ["energy_kj", "energyKj", "energyKJ"]));
   const normalizedKcal = energyKcal ?? (energyKj === null ? null : energyKj / 4.184);
@@ -197,8 +205,10 @@ function normalizeModelOutput(raw) {
   const totalKcal = nutritionPerServing.energyKcal * (intakeGrams / grams);
   const evaluations = normalizeEvaluations(raw.evaluations || raw.evaluation, nutritionPerServing, totalKcal);
   const servingLabel = cleanText(firstPresent(sourceServing, ["label", "name"]), 80) || `每份（约${round(grams, 0)}g）`;
-  const scopeLabel = cleanText(firstPresent(sourceServing, ["scope_label", "scopeLabel", "intake_label", "intakeLabel"]), 120)
-    || `按本次约 ${round(intakeGrams, 0)}g 估算`;
+  const scopeLabel = requestedIntakeGrams
+    ? `按本次约 ${round(intakeGrams, 0)}g 估算`
+    : cleanText(firstPresent(sourceServing, ["scope_label", "scopeLabel", "intake_label", "intakeLabel"]), 120)
+      || `按本次约 ${round(intakeGrams, 0)}g 估算`;
 
   return {
     valid: true,
@@ -235,7 +245,7 @@ function normalizeEvaluations(source, nutrition, totalKcal) {
 
 async function fileToDataUrl(file) {
   const buffer = await file.arrayBuffer();
-  return `data:${file.type || "image/jpeg"};base64,${arrayBufferToBase64(buffer)}`;
+  return `data:${inferImageMime(file)};base64,${arrayBufferToBase64(buffer)}`;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -256,6 +266,40 @@ function parseModelJson(content) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function isImageUpload(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "");
+  return type.startsWith("image/") || /\.(?:jpe?g|png|webp|heic|heif)$/i.test(name);
+}
+
+function inferImageMime(file) {
+  const type = String(file?.type || "").toLowerCase();
+  if (type.startsWith("image/")) return type;
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.png$/.test(name)) return "image/png";
+  if (/\.webp$/.test(name)) return "image/webp";
+  if (/\.heic$/.test(name)) return "image/heic";
+  if (/\.heif$/.test(name)) return "image/heif";
+  return "image/jpeg";
+}
+
+function parseExplicitIntakeGrams(text) {
+  const source = cleanText(text, MAX_CONTEXT_LENGTH);
+  if (!source) return null;
+  const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了|吃掉了|食用了?)\s*整(?:袋|包)\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i);
+  if (fullPack) return clampNumber(fullPack[1], 1, 20000, null);
+  const patterns = [
+    /(?:^|[，,。；;\s])(?:本次|这次|实际|食用量|摄入量)\s*(?:实际\s*)?(?:是|为|摄入了?|食用了?|吃了|吃掉了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+    /(?:^|[，,。；;\s])我(?:这次)?\s*(?:本次|这次|实际)?\s*(?:吃了|吃掉了|食用了?|摄入了?|用了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+    /(?:^|[，,。；;\s])(?:吃了|吃掉了|食用了?|摄入了?|用了)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
+  ];
+  for (const pattern of patterns) {
+    const explicit = source.match(pattern);
+    if (explicit) return clampNumber(explicit[1], 1, 20000, null);
+  }
+  return /^\s*\d+(?:\.\d+)?\s*(?:克|g)\s*$/i.test(source) ? clampNumber(source, 1, 20000, null) : null;
 }
 
 function firstPresent(object, keys) {

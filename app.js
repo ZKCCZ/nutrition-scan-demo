@@ -7,7 +7,7 @@
   // {
   //   foodName, serving: { label, grams, count, scopeLabel },
   //   nutritionPerServing: { energyKcal, protein, fat, carbs, sugar?, sodium },
-  //   riceEquivalent: { bowls?, grams?, text?, detail? }, evaluations: ["…", "…"]
+  //   riceEquivalent: { bowls?, grams?, text?, detail? } // per-serving base; UI scales it once
   // }
   // Worker URL is public; the model key remains only in the Worker Secret.
   // The public page can switch proxies without rebuilding the app.  The
@@ -59,6 +59,7 @@
   const progressBar = $("progressBar");
   const progressTrack = document.querySelector(".progress-track");
   const scanStatus = $("scanStatus");
+  const photoPickerButton = $("photoPickerButton");
   const amountInput = $("amountInput");
   const amountSlider = $("amountSlider");
   const toast = $("toast");
@@ -69,6 +70,7 @@
   let selectionIsDemo = false;
   let mealContext = "";
   let requestedIntakeGrams = null;
+  let analyzedIntakeGrams = 65;
   let amount = 65;
   let maxAmount = 500;
   let serving = { ...demoAnalysis.serving };
@@ -113,27 +115,64 @@
   // “每100g” or “整袋100g” describes the package, not necessarily what was
   // eaten this time, so it must not silently become the intake amount.
   function parseRequestedIntakeGrams(text) {
-    const source = String(text || "").trim();
+    const source = String(text || "").replace(/\s+/g, " ").trim();
     if (!source) return null;
-    const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了|吃掉了|食用了?)\s*整(?:袋|包)\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i);
+    const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了?|吃掉了?|食用了?|摄入了?)\s*(?:整|一)\s*(?:袋|包)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?:左右|上下)?(?![A-Za-z0-9])/i);
     if (fullPack) return clampIntakeGrams(fullPack[1]);
-    const patterns = [
-      /(?:^|[，,。；;\s])(?:本次|这次|实际|食用量|摄入量)\s*(?:实际\s*)?(?:是|为|摄入了?|食用了?|吃了|吃掉了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-      /(?:^|[，,。；;\s])我(?:这次)?\s*(?:本次|这次|实际)?\s*(?:吃了|吃掉了|食用了?|摄入了?|用了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-      /(?:^|[，,。；;\s])(?:吃了|吃掉了|食用了?|摄入了?|用了)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-    ];
-    for (const pattern of patterns) {
-      const explicit = source.match(pattern);
-      if (explicit) return clampIntakeGrams(explicit[1]);
+    const matches = [...source.matchAll(/(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?:左右|上下)?(?![A-Za-z0-9])/ig)];
+    for (const match of matches) {
+      const before = source.slice(0, match.index).replace(/[，,。；;：:\s]+$/g, "");
+      const isPackageQuantity = /(?:每|每份|每袋|每包|包装|规格|含量|一袋|一包|整袋|整包)$/i.test(before);
+      if (isPackageQuantity) continue;
+      const hasIntakeCue = /(?:我(?:这次)?|本次|这次|实际|食用量|摄入量|吃|食用|摄入|用|半袋|半包)/i.test(before.slice(-24));
+      const isStandalone = source.trim() === match[0].trim();
+      if (hasIntakeCue || isStandalone) return clampIntakeGrams(match[1]);
     }
-    if (/^\s*\d+(?:\.\d+)?\s*(?:克|g)\s*$/i.test(source)) return clampIntakeGrams(source);
     return null;
   }
 
-  function isImageFile(file) {
-    if (!file) return false;
-    const type = String(file.type || "").toLowerCase();
-    return type.startsWith("image/") || IMAGE_EXTENSIONS.test(String(file.name || ""));
+  async function detectImageMimeType(file) {
+    const declaredType = String(file && file.type || "").toLowerCase();
+    if (declaredType.startsWith("image/") && declaredType !== "image/*") return declaredType;
+    const fileName = String(file && file.name || "");
+    if (IMAGE_EXTENSIONS.test(fileName)) {
+      if (/\.png$/i.test(fileName)) return "image/png";
+      if (/\.webp$/i.test(fileName)) return "image/webp";
+      if (/\.heic$/i.test(fileName)) return "image/heic";
+      if (/\.heif$/i.test(fileName)) return "image/heif";
+      return "image/jpeg";
+    }
+    // A few Android file managers hand the browser an image with no MIME type
+    // or file extension. Sniff the short, non-sensitive header before
+    // rejecting it, so a genuine Vivo camera image still reaches the preview.
+    try {
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      const has = (...values) => values.every((value, index) => head[index] === value);
+      if (has(0xff, 0xd8, 0xff)) return "image/jpeg";
+      if (has(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+      if (has(0x47, 0x49, 0x46, 0x38)) return "image/gif";
+      if (has(0x52, 0x49, 0x46, 0x46) && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) return "image/webp";
+      const brand = String.fromCharCode(...head.slice(8, 12));
+      if (brand.includes("heic") || brand.includes("heix") || brand.includes("hevc") || brand.includes("hevx") || brand.includes("mif1")) return "image/heic";
+    } catch (_) {
+      // Fall through to the standard validation message below.
+    }
+    return "";
+  }
+
+  async function prepareImageFile(file) {
+    if (!file || !file.size) throw new Error("没有读取到图片，请再选一次");
+    const mimeType = await detectImageMimeType(file);
+    if (!mimeType) throw new Error("请选择图片文件");
+    const hasCorrectType = String(file.type || "").toLowerCase() === mimeType;
+    const extension = mimeType === "image/png" ? "png"
+      : mimeType === "image/webp" ? "webp"
+        : mimeType === "image/gif" ? "gif"
+          : mimeType === "image/heif" ? "heif"
+            : mimeType === "image/heic" ? "heic" : "jpg";
+    const baseName = String(file.name || "meal").replace(/\.[^.]+$/, "") || "meal";
+    const normalized = hasCorrectType ? file : new File([file], `${baseName}.${extension}`, { type: mimeType, lastModified: Date.now() });
+    return compressImageIfNeeded(normalized);
   }
 
   function loadImageElement(url) {
@@ -294,7 +333,13 @@
     const list = $("evaluationList");
     list.replaceChildren();
     const safeItems = evaluations.filter((item) => typeof item === "string" && item.trim()).slice(0, 3);
-    const items = safeItems.length ? safeItems : ["当前识别结果未给出评价，请先核对营养成分表。"];
+    let items = safeItems.length ? safeItems : ["当前识别结果未给出评价，请先核对营养成分表。"];
+    if (Math.round(amount) !== Math.round(analyzedIntakeGrams)) {
+      items = [
+        ...items.slice(0, 2),
+        `已按 ${Math.round(amount)}g 实时重算营养数值；以上建议主要描述食物本身。`,
+      ];
+    }
     items.forEach((item) => {
       const li = document.createElement("li");
       li.textContent = item.trim();
@@ -334,15 +379,35 @@
       const label = document.createElement("span");
       const ratio = max === min ? 0 : ((tick - min) / (max - min)) * 100;
       label.textContent = `${formatInteger(tick)}g`;
-      label.style.left = `${ratio}%`;
-      if (index === 0) label.style.transform = "none";
-      else if (index === ticks.length - 1) label.style.transform = "translateX(-100%)";
+      if (index === 0) {
+        label.style.left = "0";
+        label.style.transform = "none";
+      } else if (index === ticks.length - 1) {
+        label.style.left = "100%";
+        label.style.transform = "translateX(-100%)";
+      } else {
+        // Chrome Android positions a 16px range thumb within the usable
+        // track, not at a percentage of the input's outside edges. Correct
+        // the internal label by the same geometry so 100g sits under the
+        // actual 100g thumb rather than a few pixels to its left.
+        const thumbDiameter = 16;
+        const correction = (thumbDiameter / 2) - ((ratio / 100) * thumbDiameter);
+        label.style.left = `calc(${ratio}% + ${correction.toFixed(3)}px)`;
+        label.style.transform = "translateX(-50%)";
+      }
       scale.appendChild(label);
     });
   }
 
   function recalculate() {
-    amount = Math.max(1, Math.min(maxAmount, number(amountInput.value, amount || serving.grams || 65)));
+    const requestedAmount = Math.max(1, number(amountInput.value, amount || serving.grams || 65));
+    if (requestedAmount > maxAmount) {
+      maxAmount = Math.max(500, Math.min(20000, Math.ceil(requestedAmount / 50) * 50));
+      amountInput.max = String(maxAmount);
+      amountSlider.max = String(maxAmount);
+      renderSliderScale();
+    }
+    amount = Math.max(1, Math.min(maxAmount, requestedAmount));
     amountInput.value = Math.round(amount);
     amountSlider.value = Math.round(Math.min(amount, maxAmount));
     $("amountLabelTop").textContent = Math.round(amount);
@@ -384,6 +449,7 @@
     $("sodiumResult").textContent = result.sodium === null ? "—" : `${formatInteger(result.sodium)} mg`;
     setBaseText("sodiumBase", nutrition.sodium, "mg", 0);
     renderRiceEquivalent(factor);
+    renderEvaluations();
   }
 
   function syncNutritionFromInputs() {
@@ -464,8 +530,9 @@
     nutrition = { ...analysis.nutritionPerServing };
     riceEquivalent = isPlainObject(analysis.riceEquivalent) ? { ...analysis.riceEquivalent } : {};
     evaluations = Array.isArray(analysis.evaluations) ? [...analysis.evaluations] : [];
-    amount = Math.max(1, number(serving.intakeGrams, serving.grams));
-    maxAmount = Math.max(500, Math.min(2000, Math.ceil(amount / 50) * 50));
+    analyzedIntakeGrams = Math.max(1, number(serving.intakeGrams, serving.grams));
+    amount = analyzedIntakeGrams;
+    maxAmount = Math.max(500, Math.min(20000, Math.ceil(amount / 50) * 50));
     amountInput.max = String(maxAmount);
     amountSlider.max = String(maxAmount);
     // Seed the editable controls before recalculate(). Otherwise that function
@@ -483,7 +550,6 @@
     $("resultSourceBadge").textContent = source === "live" ? "AI 识别 · 可核对" : "演示数据 · 可编辑";
     $("editDataTitle").textContent = `修改${serving.label}标签数据`;
     resetBaseInputs();
-    renderEvaluations();
     recalculate();
   }
 
@@ -623,10 +689,24 @@
     showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2400);
   }
 
-  photoInput.addEventListener("click", () => {
-    // Clearing before opening the native picker lets Android fire `change`
-    // even when the user selects the same photo again.
-    photoInput.value = "";
+  photoPickerButton.addEventListener("click", () => {
+    // This call remains directly inside the visible button's trusted click
+    // gesture. It is more reliable in Android WebViews than a transparent
+    // file input stretched over a styled element.
+    try {
+      if (typeof photoInput.showPicker === "function") {
+        try {
+          photoInput.showPicker();
+          return;
+        } catch (_) {
+          // Older Android WebViews expose no supported picker API. The direct
+          // click fallback below is still inside the same user gesture.
+        }
+      }
+      photoInput.click();
+    } catch (_) {
+      showToast("无法打开相册，请在浏览器中重新打开页面后再试");
+    }
   });
 
   photoInput.addEventListener("change", async (event) => {
@@ -634,12 +714,8 @@
     if (!file) return;
     const selection = ++fileSelectionRun;
     photoInput.value = "";
-    if (!isImageFile(file)) {
-      showToast("请选择图片文件");
-      return;
-    }
     try {
-      const uploadFile = await compressImageIfNeeded(file);
+      const uploadFile = await prepareImageFile(file);
       if (selection !== fileSelectionRun) return;
       const url = URL.createObjectURL(uploadFile);
       enterContext({ url, file: uploadFile, isDemo: false, ownsObjectUrl: true });

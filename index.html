@@ -7,8 +7,8 @@
     <meta name="description" content="拍一下，先看懂这一顿。营养成分表演示工具。" />
     <title>一口清楚 · 营养拍照 Demo</title>
     <link rel="stylesheet" href="styles.css?v=fix-20260805-2" />
-    <script src="runtime-config.js?v=fix-20260805-3"></script>
-    <script defer src="app.js?v=fix-20260805-3"></script>
+    <script src="runtime-config.js?v=fix-20260805-5"></script>
+    <script defer src="app.js?v=fix-20260805-5"></script>
   </head>
   <body>
     <main class="app-shell">
@@ -36,10 +36,10 @@
           </div>
           <p class="capture-title">准备好包装上的营养表了吗？</p>
           <p class="capture-caption">先拍包装或食物，再补一句你实际吃了多少。</p>
-          <label class="photo-picker">
-            <span class="primary-button"><span class="button-icon">＋</span>拍照 / 从相册选择</span>
-            <input id="photoInput" class="photo-input-overlay" type="file" accept="image/*" aria-label="拍照或从相册选择" />
-          </label>
+          <button id="photoPickerButton" class="primary-button photo-picker-button" type="button" aria-controls="photoInput">
+            <span class="button-icon">＋</span>拍照 / 从相册选择
+          </button>
+          <input id="photoInput" class="photo-input-native" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif" aria-label="拍照或从相册选择" />
           <button id="demoButton" class="secondary-button" type="button">
             <span class="sparkle">✦</span>
             体验一份模拟结果
@@ -132,7 +132,7 @@
           <div class="amount-control">
             <div class="amount-heading">
               <label for="amountInput">本次一共吃了多少？</label>
-              <div class="amount-entry"><input id="amountInput" type="number" min="1" max="500" step="1" value="65" inputmode="decimal" /><span>g</span></div>
+              <div class="amount-entry"><input id="amountInput" type="number" min="1" max="20000" step="1" value="65" inputmode="decimal" /><span>g</span></div>
             </div>
             <input id="amountSlider" class="amount-slider" type="range" min="1" max="500" step="1" value="65" aria-label="实际食用量（克）" />
             <div class="slider-scale" aria-hidden="true"><span data-tick="min">1g</span><span data-tick="100">100g</span><span data-tick="250">250g</span><span data-tick="max">500g</span></div>

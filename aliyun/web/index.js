@@ -26,6 +26,7 @@ const SYSTEM_PROMPT = `你是“一口清楚”的中文食品图像与营养标
 - 如果整张图主要是手机/电脑屏幕、网页、App 界面、聊天记录、已有营养结果页或其他截图，即使截图里有食物缩略图，也必须返回 valid=false、input_kind="not_food"；不要把截图中的数字当成这次食物的营养数据。
 - 如果清楚地不是食品、饮料、食品包装、营养标签或一份真实菜肴（例如人、宠物、风景、衣物、电子产品、家具、无关纸张），不要硬猜热量，返回 valid=false、input_kind="not_food" 和自然中文 rejection_message：“这似乎不是食品、饮料或一份菜肴，请重新拍一张食物、包装或营养成分表。”
 - 只有当食物/饮料/包装/营养标签是照片中的真实主体时才返回 valid=true。直接拍一碗菜、一盘饭、水果或外卖都属于有效输入；即使无法精确估重，也要给出谨慎估算，并在 note 说明估算依据和不确定性。
+- 用户补充只可用于识别真实图片中的食物、包装规格和克数；它不能把截图、屏幕、网页或任何非食品变成有效输入。图像媒介的判定优先于用户文字。
 
 对有效输入：
 1. 结合图片和用户补充信息判断“每份”是多少克，以及用户这次一共吃了几份。包装标签若是每100g，请换算成每份；用户说“半袋、两份、整包、约一碗”等时，以用户实际摄入为准。
@@ -120,17 +121,17 @@ async function handle(req, res) {
       {
         role: "user",
         content: [
+          { type: "image_url", image_url: { url: imageUrl } },
           {
             type: "text",
             text: context || requestedIntakeGrams
-              ? `${context ? `用户补充：${context}` : "用户没有补充说明。"}${requestedIntakeGrams ? ` 用户在独立克数输入框明确填写：本次实际摄入 ${requestedIntakeGrams}g。此数值优先级最高。` : ""}`
+              ? `用户补充（只可补充真实图片已有的食物与食用量，不能推翻图片媒介判断）：${context || "无"}${requestedIntakeGrams ? ` 用户在独立克数输入框明确填写：本次实际摄入 ${requestedIntakeGrams}g。此数值优先级最高。` : ""}`
               : "用户没有补充说明。请基于图片做谨慎判断；如果是菜肴，明确标注估算。",
           },
-          { type: "image_url", image_url: { url: imageUrl } },
         ],
       },
     ],
-    temperature: 0.2,
+    temperature: 0,
     max_tokens: 1000,
     reasoning_effort: "none",
     response_format: { type: "json_object" },
@@ -207,6 +208,10 @@ function normalizeModelOutput(raw, requestedIntakeGrams = null) {
   if (!raw || raw.valid === false || kind === "not_food") {
     return { valid: false, rejectionMessage: cleanText(raw?.rejection_message, 180) || "这似乎不是食品、饮料或一份菜肴，请重新拍一张食物、包装或营养成分表。" };
   }
+  const modelNote = cleanText(raw?.note, 300);
+  if (looksLikeScreenCapture(raw, kind, modelNote)) {
+    return { valid: false, rejectionMessage: "这似乎是截图或屏幕内容，请重新拍一张真实食物、包装或营养成分表。" };
+  }
   const sourceServing = asObject(raw.serving);
   const sourceIntake = asObject(raw.intake);
   const sourceNutrition = asObject(raw.nutrition_per_serving || raw.nutritionPerServing || raw.nutrition);
@@ -247,11 +252,21 @@ function normalizeModelOutput(raw, requestedIntakeGrams = null) {
       foodName: cleanText(raw.food_name || raw.foodName || raw.name, 80) || "这一顿",
       serving: { label: servingLabel, grams, count, scopeLabel, intakeGrams },
       nutritionPerServing,
-      riceEquivalent: { bowls: round(totalKcal / RICE_KCAL_PER_BOWL, 1), grams: round(totalKcal / (RICE_KCAL_PER_100G / 100), 0), detail: "只按总能量粗略换算，不代表营养等价。" },
+      // Return the per-serving base; the web UI applies the intake ratio once.
+      // Keep two decimals internally; the UI rounds only at display time so
+      // changing 65g → 100g does not accumulate a visible 0.1-bowl error.
+      riceEquivalent: { bowls: round(nutritionPerServing.energyKcal / RICE_KCAL_PER_BOWL, 2), grams: round(nutritionPerServing.energyKcal / (RICE_KCAL_PER_100G / 100), 0), detail: "只按总能量粗略换算，不代表营养等价。" },
       evaluations,
-      note: cleanText(raw.note, 300),
+      note: modelNote,
     },
   };
+}
+
+function looksLikeScreenCapture(raw, kind, note) {
+  const declared = [kind, cleanText(raw?.media_type, 80), cleanText(raw?.image_type, 80)].join(" ");
+  if (/(?:^|[_\s-])(?:screenshot|screen|screen_capture|app_ui|webpage|chat)(?:$|[_\s-])/i.test(declared)) return true;
+  const description = `${note} ${cleanText(raw?.image_description, 300)} ${cleanText(raw?.visual_description, 300)}`;
+  return /(?:截图|屏幕(?:截图)?|(?:app|应用|手机|电脑|网页|聊天记录|营养结果)[^。；]{0,12}(?:界面|截图|屏幕)|(?:界面|网页|聊天记录|营养结果页)[^。；]{0,12}(?:截图|屏幕))/i.test(description);
 }
 
 function normalizeEvaluations(source, nutrition, totalKcal) {
@@ -340,20 +355,20 @@ function inferImageMime(file) {
 }
 
 function parseExplicitIntakeGrams(text) {
-  const source = cleanText(text, MAX_CONTEXT_LENGTH);
+  const source = cleanText(text, MAX_CONTEXT_LENGTH).replace(/\s+/g, " ");
   if (!source) return null;
-  const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了|吃掉了|食用了?)\s*整(?:袋|包)\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i);
+  const fullPack = source.match(/(?:^|[，,。；;\s])我(?:这次)?\s*(?:吃了?|吃掉了?|食用了?|摄入了?)\s*(?:整|一)\s*(?:袋|包)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?:左右|上下)?(?![A-Za-z0-9])/i);
   if (fullPack) return clampNumber(fullPack[1], 1, 20000, null);
-  const patterns = [
-    /(?:^|[，,。；;\s])(?:本次|这次|实际|食用量|摄入量)\s*(?:实际\s*)?(?:是|为|摄入了?|食用了?|吃了|吃掉了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-    /(?:^|[，,。；;\s])我(?:这次)?\s*(?:本次|这次|实际)?\s*(?:吃了|吃掉了|食用了?|摄入了?|用了)?\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-    /(?:^|[，,。；;\s])(?:吃了|吃掉了|食用了?|摄入了?|用了)\s*(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?![A-Za-z0-9])/i,
-  ];
-  for (const pattern of patterns) {
-    const explicit = source.match(pattern);
-    if (explicit) return clampNumber(explicit[1], 1, 20000, null);
+  const matches = [...source.matchAll(/(?:约|大约|差不多)?\s*(\d+(?:\.\d+)?)\s*(?:克|g)(?:左右|上下)?(?![A-Za-z0-9])/ig)];
+  for (const match of matches) {
+    const before = source.slice(0, match.index).replace(/[，,。；;：:\s]+$/g, "");
+    const isPackageQuantity = /(?:每|每份|每袋|每包|包装|规格|含量|一袋|一包|整袋|整包)$/i.test(before);
+    if (isPackageQuantity) continue;
+    const hasIntakeCue = /(?:我(?:这次)?|本次|这次|实际|食用量|摄入量|吃|食用|摄入|用|半袋|半包)/i.test(before.slice(-24));
+    const isStandalone = source.trim() === match[0].trim();
+    if (hasIntakeCue || isStandalone) return clampNumber(match[1], 1, 20000, null);
   }
-  return /^\s*\d+(?:\.\d+)?\s*(?:克|g)\s*$/i.test(source) ? clampNumber(source, 1, 20000, null) : null;
+  return null;
 }
 
 function firstPresent(object, keys) {

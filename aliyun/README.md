@@ -21,4 +21,4 @@
 - `LUNA_BASE_URL`：`https://xiaohondou.com/v1`
 - `LUNA_MODEL`：`gpt-5.6-luna`
 
-部署完成后，把 HTTP 触发器 URL 填到根目录 `runtime-config.js` 的 `NUTRI_API_ENDPOINT`，再推送 GitHub Pages。代码仅允许 `https://zkccz.github.io` 跨域调用；接口也限制单实例内每 IP 10 分钟 10 次，作为 demo 的基础保护。
+部署完成后，把 HTTP 触发器 URL 填到根目录 `runtime-config.js` 的 `NUTRI_API_ENDPOINT`，再推送 GitHub Pages。代码仅允许 `https://zkccz.github.io` 跨域调用；接口也限制单实例内每 IP 10 分钟 10 次，作为 demo 的基础保护。接口返回的 `riceEquivalent` 是“每份”基准值，网页会按本次克数只换算一次。

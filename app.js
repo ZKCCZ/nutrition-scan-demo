@@ -360,10 +360,15 @@
       sodium: Number.isFinite(nutrition.sodium) ? nutrition.sodium * factor : null,
     };
 
+    // Update each amount-dependent node directly. Rebuilding calorieDescription
+    // with innerHTML used to replace #amountLabelTop during input events and
+    // left the detail cards, rice conversion, and heading on the old amount in
+    // some mobile browsers.
+    const displayAmount = Math.round(amount);
     $("calorieValue").textContent = calories === null ? "—" : formatInteger(calories);
     $("calorieKjValue").textContent = formatInteger(calories);
-    $("calorieDescription").innerHTML = `${formatInteger(calories)} kcal · 按 <span id="amountLabelTop">${Math.round(amount)}</span>g 计算`;
-    $("nutritionHeading").textContent = `${serving.label} → 本次 ${Math.round(amount)}g`;
+    $("amountLabelTop").textContent = String(displayAmount);
+    $("nutritionHeading").textContent = `${serving.label} → 本次 ${displayAmount}g`;
     $("unitNote").textContent = factor === 1 ? "正好 1 份" : `约 ${format(factor, 1)} 份`;
 
     $("energyKjResult").textContent = calories === null ? "—" : `${formatInteger(calories)} kcal`;

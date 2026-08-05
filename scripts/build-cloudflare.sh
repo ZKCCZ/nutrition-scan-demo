@@ -2,4 +2,4 @@
 set -eu
 
 mkdir -p public
-cp index.html styles.css app.js .nojekyll public/
+cp index.html styles.css app.js runtime-config.js .nojekyll public/

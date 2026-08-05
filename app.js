@@ -10,7 +10,9 @@
   //   riceEquivalent: { bowls?, grams?, text?, detail? }, evaluations: ["…", "…"]
   // }
   // Worker URL is public; the model key remains only in the Worker Secret.
-  const API_PATH = "https://yikouqingchu-demo.cachoacn.workers.dev/api/analyze";
+  // The public page can switch proxies without rebuilding the app.  The
+  // endpoint itself is not a secret; the model key must remain server-side.
+  const API_PATH = String(window.NUTRI_API_ENDPOINT || "https://nutritican-demo-sqjzjsjfgi.cn-hangzhou.fcapp.run/api/analyze");
   const REQUEST_TIMEOUT_MS = 35000;
   const FALLBACK_DELAY_MS = 1200;
 
@@ -385,7 +387,15 @@
     if (!file) throw new Error("请先选择一张图片");
     const controller = new AbortController();
     activeController = controller;
-    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    // Keep timeout aborts distinguishable from an intentional abort caused by
+    // leaving the scan screen.  Previously an AbortError was silently ignored
+    // by startAnalysis, so a slow/unreachable API left the UI on the scan view
+    // forever.
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
     const formData = new FormData();
     formData.append("image", file, file.name || "meal.jpg");
     formData.append("context", context);
@@ -406,6 +416,14 @@
         throw error;
       }
       return normalizeAnalysis(payload);
+    } catch (error) {
+      if (error && error.name === "AbortError" && timedOut) {
+        const timeoutError = new Error("识别服务响应超时，请稍后再试");
+        timeoutError.code = "TIMEOUT";
+        timeoutError.cause = error;
+        throw timeoutError;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
       if (activeController === controller) activeController = null;
@@ -431,7 +449,19 @@
       applyAnalysis(analysis, selectionIsDemo ? "demo" : "live");
       showView(resultView);
     } catch (error) {
-      if (run !== analysisRun || error.name === "AbortError") return;
+      // A stale run means the user cancelled/replaced the request; do not let
+      // that old request update the new screen.  An AbortError from the active
+      // run, however, is a real request failure (normally our timeout) and
+      // must leave the scan screen instead of appearing to hang forever.
+      if (run !== analysisRun) return;
+      error = error instanceof Error ? error : new Error("识别服务暂不可用，请稍后再试");
+      if (error && error.name === "AbortError") {
+        error = new Error("识别服务请求被中断，请稍后再试");
+        error.code = "ABORTED";
+      }
+      // Stop progress-stage timers before displaying the error; otherwise a
+      // late stage timer can overwrite the failure message while we wait.
+      clearProcessing();
       if (error.code === "NOT_FOOD") {
         $("scanKicker").textContent = "请重新拍一张";
         setProgress(100, error.message || "这似乎不是食品、饮料或一份菜肴。");

@@ -34,7 +34,7 @@
             <span class="orbit-dot orbit-dot-two"></span>
           </div>
           <p class="capture-title">准备好包装上的营养表了吗？</p>
-          <p class="capture-caption">演示版只在本页处理图片，不会上传。</p>
+          <p class="capture-caption">先拍包装或食物，再补一句你实际吃了多少。</p>
           <label class="primary-button" for="photoInput">
             <span class="button-icon">＋</span>
             拍照 / 从相册选择
@@ -44,7 +44,7 @@
             <span class="sparkle">✦</span>
             体验一份模拟结果
           </button>
-          <p class="privacy-note"><span aria-hidden="true">⌁</span> 图片只在本机演示，明天接入 API 后再启用真实识别</p>
+          <p class="privacy-note"><span aria-hidden="true">⌁</span> 本地演示会使用示例结果；接入后才会把图片交给同源服务识别</p>
         </div>
 
         <div class="how-it-works" aria-label="使用流程">
@@ -56,10 +56,33 @@
         </div>
       </section>
 
+      <section id="contextView" class="view context-view is-hidden" aria-labelledby="contextTitle">
+        <button id="backToHomeButton" class="back-button" type="button">‹ <span>重新选图</span></button>
+        <div class="context-heading">
+          <p class="kicker">第 2 步 · 补充一句</p>
+          <h2 id="contextTitle">你吃的是<strong>哪一份</strong>？</h2>
+          <p>告诉一口清楚食物是什么、包装规格或你实际吃了多少，模型会按这一次来估算。</p>
+        </div>
+
+        <div class="context-photo-card">
+          <img id="contextPreview" alt="待分析的食物或营养成分表" />
+          <span id="contextPhotoBadge">已选图片</span>
+        </div>
+
+        <form id="mealContextForm" class="context-form">
+          <label for="mealContext">给一口清楚补充信息 <span>可不填</span></label>
+          <textarea id="mealContext" rows="4" maxlength="240" placeholder="例如：这是全麦饼干，整袋 65g；我这次吃了半袋。&#10;或者：这是午饭的红烧肉，约 1 碗。"></textarea>
+          <p class="context-hint"><span aria-hidden="true">✦</span> 可写食物名、包装规格、吃了几份或几克；不确定也可以直接分析。</p>
+          <button id="analyzeButton" class="primary-button" type="submit"><span class="button-icon">↗</span> 开始分析这一顿</button>
+        </form>
+
+        <p class="context-privacy"><span aria-hidden="true">⌁</span> 接入后，图片和这段说明会一起发到本站的识别服务；不会直接暴露模型密钥。</p>
+      </section>
+
       <section id="scanView" class="view scan-view is-hidden" aria-live="polite" aria-labelledby="scanTitle">
         <button id="cancelScanButton" class="back-button" type="button">‹ <span>换一张</span></button>
         <div class="scan-heading">
-          <p class="kicker">本地演示 · 不调用 API</p>
+          <p id="scanKicker" class="kicker">正在准备分析</p>
           <h2 id="scanTitle">正在读取营养信息<span class="loading-dots" aria-hidden="true"><i></i><i></i><i></i></span></h2>
           <p id="scanStatus">先看看图片，再把数字整理成这一顿。</p>
         </div>
@@ -67,22 +90,22 @@
           <div class="scan-preview-frame">
             <img id="scanPreview" alt="待识别的营养成分表" />
             <div class="scan-scanline" aria-hidden="true"></div>
-            <span class="preview-badge">仅本机预览</span>
+            <span id="previewBadge" class="preview-badge">待分析图片</span>
           </div>
         </div>
-        <div class="progress-track" role="progressbar" aria-label="模拟识别进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18">
+        <div class="progress-track" role="progressbar" aria-label="识别进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18">
           <span id="progressBar"></span>
         </div>
         <div class="scan-tips">
           <span class="tip-icon">◎</span>
-          <p>真实接入 API 后，这里会解析你拍到的营养成分表；现在先用一份可编辑的示例数据带你走完流程。</p>
+          <p id="scanTipText">正在把图片和你的补充信息整理成“每份”的营养估算。</p>
         </div>
       </section>
 
       <section id="resultView" class="view result-view is-hidden" aria-labelledby="resultTitle">
         <div class="result-topline">
           <button id="retakeTopButton" class="back-button" type="button">‹ <span>重新拍</span></button>
-          <span class="demo-badge">演示数据 · 可编辑</span>
+          <span id="resultSourceBadge" class="demo-badge">演示数据 · 可编辑</span>
         </div>
 
         <div class="result-intro">
@@ -90,22 +113,22 @@
           <div>
             <p class="kicker">本顿营养估算</p>
             <h2 id="resultTitle">谷物脆片</h2>
-            <p id="resultSubtitle" class="muted-copy">请核对标签，数据可以直接修改。</p>
+            <p id="resultSubtitle" class="muted-copy">按本次 1 份（65g）估算；可直接调整。</p>
           </div>
         </div>
 
         <div class="calorie-card">
           <div class="calorie-card-top">
             <div>
-              <p class="card-label">本次摄入能量</p>
+              <p id="calorieLabel" class="card-label">本次摄入能量</p>
               <p class="calorie-value"><strong id="calorieValue">303</strong><span>kcal</span></p>
-              <p class="calorie-kj"><span id="calorieKjValue">1,268</span> kJ · 按 <span id="amountLabelTop">65</span>g 计算</p>
+              <p id="calorieDescription" class="calorie-kj"><span id="calorieKjValue">303</span> kcal · 按 <span id="amountLabelTop">65</span>g 计算</p>
             </div>
             <div class="calorie-ring" aria-hidden="true"><span id="ringValue">65g</span></div>
           </div>
           <div class="amount-control">
             <div class="amount-heading">
-              <label for="amountInput">实际吃了多少？</label>
+              <label for="amountInput">本次一共吃了多少？</label>
               <div class="amount-entry"><input id="amountInput" type="number" min="1" max="500" step="1" value="65" inputmode="decimal" /><span>g</span></div>
             </div>
             <input id="amountSlider" class="amount-slider" type="range" min="1" max="500" step="1" value="65" aria-label="实际食用量（克）" />
@@ -119,32 +142,44 @@
         </div>
 
         <div class="section-heading">
-          <div><p class="kicker">营养成分</p><h3>每 100g → 本次摄入</h3></div>
-          <span class="unit-note">按包装标签计算</span>
+          <div><p class="kicker">营养成分表</p><h3 id="nutritionHeading">每份（65g）→ 本次</h3></div>
+          <span id="unitNote" class="unit-note">按每份估算</span>
         </div>
         <div class="nutrient-grid">
-          <article class="nutrient-card energy-card"><div class="nutrient-top"><span class="nutrient-icon">◒</span><span>能量</span></div><strong id="energyKjResult">1,268 kJ</strong><small id="energyKjBase">1,950 kJ / 100g</small></article>
-          <article class="nutrient-card protein-card"><div class="nutrient-top"><span class="nutrient-icon">✦</span><span>蛋白质</span></div><strong id="proteinResult">4.9 g</strong><small id="proteinBase">7.5 g / 100g</small></article>
-          <article class="nutrient-card fat-card"><div class="nutrient-top"><span class="nutrient-icon">◌</span><span>脂肪</span></div><strong id="fatResult">15.7 g</strong><small id="fatBase">24.1 g / 100g</small></article>
-          <article class="nutrient-card carb-card"><div class="nutrient-top"><span class="nutrient-icon">⌁</span><span>碳水化合物</span></div><strong id="carbsResult">39.0 g</strong><small id="carbsBase">60 g / 100g</small></article>
-          <article class="nutrient-card sodium-card"><div class="nutrient-top"><span class="nutrient-icon">⊙</span><span>钠</span></div><strong id="sodiumResult">293 mg</strong><small id="sodiumBase">450 mg / 100g</small></article>
-          <article class="nutrient-card sugar-card"><div class="nutrient-top"><span class="nutrient-icon">◇</span><span>糖</span></div><strong id="sugarResult">11.7 g</strong><small id="sugarBase">18 g / 100g</small></article>
+          <article class="nutrient-card energy-card"><div class="nutrient-top"><span class="nutrient-icon">◒</span><span>能量</span></div><strong id="energyKjResult">303 kcal</strong><small id="energyKjBase">每份 303 kcal</small></article>
+          <article class="nutrient-card protein-card"><div class="nutrient-top"><span class="nutrient-icon">✦</span><span>蛋白质</span></div><strong id="proteinResult">4.9 g</strong><small id="proteinBase">每份 4.9 g</small></article>
+          <article class="nutrient-card fat-card"><div class="nutrient-top"><span class="nutrient-icon">◌</span><span>脂肪</span></div><strong id="fatResult">15.7 g</strong><small id="fatBase">每份 15.7 g</small></article>
+          <article class="nutrient-card carb-card"><div class="nutrient-top"><span class="nutrient-icon">⌁</span><span>碳水化合物</span></div><strong id="carbsResult">39.0 g</strong><small id="carbsBase">每份 39.0 g</small></article>
+          <article class="nutrient-card sodium-card"><div class="nutrient-top"><span class="nutrient-icon">⊙</span><span>钠</span></div><strong id="sodiumResult">293 mg</strong><small id="sodiumBase">每份 293 mg</small></article>
+          <article class="nutrient-card sugar-card"><div class="nutrient-top"><span class="nutrient-icon">◇</span><span>糖</span></div><strong id="sugarResult">11.7 g</strong><small id="sugarBase">每份 11.7 g</small></article>
         </div>
 
-        <details class="comparison-card" open>
-          <summary><span><span class="summary-icon">≈</span> 同热量参考 <small>只比较能量，不代表营养等价</small></span><span class="chevron">⌄</span></summary>
-          <div class="comparison-content">
-            <div class="comparison-item"><span class="food-emoji">🍚</span><div><strong id="riceEquivalent">261g</strong><small>熟米饭 · 约等于</small></div></div>
-            <div class="comparison-divider"></div>
-            <div class="comparison-item"><span class="food-emoji">🥚</span><div><strong id="eggEquivalent">4.0个</strong><small>鸡蛋 · 约等于</small></div></div>
+        <section class="rice-card" aria-labelledby="riceTitle">
+          <div class="rice-card-copy">
+            <p class="kicker">米饭换算</p>
+            <h3 id="riceTitle"><span aria-hidden="true">🍚</span><strong id="riceEquivalent">约 1.1 碗熟米饭</strong></h3>
+            <p id="riceEquivalentDetail">约 260g，只按能量粗略换算，不代表营养等价。</p>
           </div>
-        </details>
+          <span class="rice-mark" aria-hidden="true">≈</span>
+        </section>
+
+        <section class="evaluation-card" aria-labelledby="evaluationTitle">
+          <div class="evaluation-heading">
+            <div><p class="kicker">营养评价</p><h3 id="evaluationTitle">这一顿，怎么看？</h3></div>
+            <span>AI 估算</span>
+          </div>
+          <ul id="evaluationList" class="evaluation-list">
+            <li>能量适中，作为一份加餐更合适。</li>
+            <li>脂肪相对偏高，正餐可搭配蔬菜和优质蛋白。</li>
+            <li>钠含量中等，注意当天其他高盐食物。</li>
+          </ul>
+        </section>
 
         <details class="data-details">
-          <summary><span>修改每 100g 标签数据</span><span class="chevron">⌄</span></summary>
-          <p class="details-intro">演示时可以故意改一个数字，看看本次摄入如何重算。正式版会把模型读到的原文放在这里供你核对。</p>
+          <summary><span id="editDataTitle">修改每份标签数据</span><span class="chevron">⌄</span></summary>
+          <p class="details-intro">如识别有偏差，可以改每份的数字；本次摄入会随之重算。正式版会保留模型读到的原文供你核对。</p>
           <div class="edit-grid">
-            <label>能量 <span><input id="baseEnergyInput" type="number" min="0" step="1" value="1950" /> kJ</span></label>
+            <label>能量 <span><input id="baseEnergyInput" type="number" min="0" step="1" value="303" /> kcal</span></label>
             <label>蛋白质 <span><input id="baseProteinInput" type="number" min="0" step="0.1" value="7.5" /> g</span></label>
             <label>脂肪 <span><input id="baseFatInput" type="number" min="0" step="0.1" value="24.1" /> g</span></label>
             <label>碳水 <span><input id="baseCarbsInput" type="number" min="0" step="0.1" value="60" /> g</span></label>
@@ -157,7 +192,7 @@
           <button id="saveButton" class="primary-button" type="button"><span class="button-icon">✓</span> 保存本顿记录</button>
           <button id="retakeButton" class="secondary-button" type="button">重新拍一张</button>
         </div>
-        <p class="disclaimer"><span>ⓘ</span> 这是产品交互演示，当前结果是模拟数据，不作医疗建议。明天接入大模型 API 时，只需替换识别逻辑。</p>
+        <p class="disclaimer"><span>ⓘ</span> 图片识别和菜肴份量都可能有误差，请核对并按实际食用量调整；结果不作医疗建议。</p>
       </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>

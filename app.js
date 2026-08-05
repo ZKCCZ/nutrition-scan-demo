@@ -146,7 +146,7 @@
     // or file extension. Sniff the short, non-sensitive header before
     // rejecting it, so a genuine Vivo camera image still reaches the preview.
     try {
-      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      const head = await readFileHead(file, 16);
       const has = (...values) => values.every((value, index) => head[index] === value);
       if (has(0xff, 0xd8, 0xff)) return "image/jpeg";
       if (has(0x89, 0x50, 0x4e, 0x47)) return "image/png";
@@ -158,6 +158,26 @@
       // Fall through to the standard validation message below.
     }
     return "";
+  }
+
+  function readFileHead(file, length) {
+    const slice = file && typeof file.slice === "function" ? file.slice(0, length) : null;
+    if (!slice) return Promise.reject(new Error("file slice unavailable"));
+    if (typeof slice.arrayBuffer === "function") {
+      return slice.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+    }
+    // Older Android WebViews may expose File/Blob but not Blob.arrayBuffer().
+    // FileReader is widely supported there and only reads the first few bytes.
+    return new Promise((resolve, reject) => {
+      if (typeof FileReader !== "function") {
+        reject(new Error("file reader unavailable"));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(new Uint8Array(reader.result || []));
+      reader.onerror = () => reject(reader.error || new Error("file read failed"));
+      reader.readAsArrayBuffer(slice);
+    });
   }
 
   async function prepareImageFile(file) {

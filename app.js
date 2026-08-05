@@ -9,7 +9,8 @@
   //   nutritionPerServing: { energyKcal, protein, fat, carbs, sugar?, sodium },
   //   riceEquivalent: { bowls?, grams?, text?, detail? }, evaluations: ["…", "…"]
   // }
-  const API_PATH = "/api/analyze";
+  // Worker URL is public; the model key remains only in the Worker Secret.
+  const API_PATH = "https://yikouqingchu-demo.cachoacn.workers.dev/api/analyze";
   const REQUEST_TIMEOUT_MS = 35000;
   const FALLBACK_DELAY_MS = 1200;
 

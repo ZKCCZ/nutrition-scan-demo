@@ -208,7 +208,7 @@ function normalizeModelOutput(raw) {
       nutritionPerServing,
       riceEquivalent: {
         bowls: round(totalKcal / RICE_KCAL_PER_BOWL, 1),
-        grams: round(totalKcal / RICE_KCAL_PER_100G, 0),
+        grams: round(totalKcal / (RICE_KCAL_PER_100G / 100), 0),
         detail: "只按总能量粗略换算，不代表营养等价。",
       },
       evaluations,

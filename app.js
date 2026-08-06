@@ -360,6 +360,10 @@
         `已按 ${Math.round(amount)}g 实时重算营养数值；以上建议主要描述食物本身。`,
       ];
     }
+    // The first screen must answer the meal-level question without sending
+    // people into the details sheet. Keep the full 2–3 points below, but make
+    // the first useful evaluation visible as the primary verdict.
+    $("primaryVerdict").textContent = items[0];
     items.forEach((item) => {
       const li = document.createElement("li");
       li.textContent = item.trim();
@@ -567,7 +571,11 @@
       ? `${serving.scopeLabel} · 已参考你的补充信息`
       : serving.scopeLabel;
     $("calorieLabel").textContent = "本次摄入能量";
-    $("resultSourceBadge").textContent = source === "live" ? "AI 识别 · 可核对" : "演示数据 · 可编辑";
+    $("resultSourceBadge").textContent = source === "live" ? "图像估算 · 可核对" : "演示标签 · 可编辑";
+    $("confidenceTitle").textContent = source === "live" ? "图像估算 · 建议确认分量" : "标签读取 · 较准确";
+    $("confidenceDetail").textContent = source === "live"
+      ? "菜肴分量和用油会影响结果；克数可直接调整。"
+      : "本次结果按包装标签换算；仍可直接修改实际摄入量。";
     $("editDataTitle").textContent = `修改${serving.label}标签数据`;
     resetBaseInputs();
     recalculate();

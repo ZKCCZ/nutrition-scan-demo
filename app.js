@@ -2,7 +2,7 @@
   "use strict";
 
   // 前端只请求同源接口，任何模型密钥都应只存在于服务端环境变量中。
-  // 接口约定：POST /api/analyze，multipart/form-data：image（图片）、context（用户补充说明）、intakeGrams（本次明确摄入量，可选）。
+  // 接口约定：POST /api/analyze，multipart/form-data 可重复携带 image（最多 3 张），也可以只携带 context（文字询问）；一次纠正通过 followup/correction/previousAnalysis 发送。
   // 推荐响应：
   // {
   //   foodName, serving: { label, grams, count, scopeLabel },
@@ -12,11 +12,13 @@
   // Worker URL is public; the model key remains only in the Worker Secret.
   // The public page can switch proxies without rebuilding the app.  The
   // endpoint itself is not a secret; the model key must remain server-side.
-  const API_PATH = String(window.NUTRI_API_ENDPOINT || "https://nutritican-demo-sqjzjsjfgi.cn-hangzhou.fcapp.run/api/analyze");
+  const localApiPath = /^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(window.location.hostname) ? "/api/analyze" : "";
+  const API_PATH = String(localApiPath || window.NUTRI_API_ENDPOINT || "https://nutritican-demo-sqjzjsjfgi.cn-hangzhou.fcapp.run/api/analyze");
   const REQUEST_TIMEOUT_MS = 35000;
   const FALLBACK_DELAY_MS = 1200;
   const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
   const TARGET_UPLOAD_BYTES = 5.5 * 1024 * 1024;
+  const MAX_IMAGES = 3;
   const IMAGE_EXTENSIONS = /\.(?:jpe?g|png|webp|heic|heif)$/i;
 
   const demoAnalysis = {
@@ -45,6 +47,13 @@
       "脂肪相对偏高，正餐可搭配蔬菜和优质蛋白。",
       "钠含量中等，注意当天其他高盐食物。",
     ],
+    inputKind: "packaged_food",
+    evidenceType: "packaged_label",
+    source: "营养成分表读取",
+    confidence: "high",
+    items: [{ name: "谷物脆片", count: 1, grams: 65 }],
+    followupUsed: false,
+    note: "演示数据；正式识别会根据图片和补充信息判断依据。",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -65,9 +74,10 @@
   const toast = $("toast");
 
   let imageUrl = "";
-  let previewObjectUrl = "";
-  let selectedFile = null;
+  let previewObjectUrls = [];
+  let selectedFiles = [];
   let selectionIsDemo = false;
+  let textOnlyMode = false;
   let mealContext = "";
   let requestedIntakeGrams = null;
   let analyzedIntakeGrams = 65;
@@ -81,6 +91,9 @@
   let activeController = null;
   let analysisRun = 0;
   let fileSelectionRun = 0;
+  let appendPhotoSelection = false;
+  let lastAnalysisPayload = null;
+  let followupUsed = false;
 
   function isPlainObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -289,46 +302,106 @@
     return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   }
 
-  function revokePreviewUrl() {
-    if (previewObjectUrl) {
-      try { URL.revokeObjectURL(previewObjectUrl); } catch (_) { /* ignored */ }
-      previewObjectUrl = "";
-    }
+  function placeholderTextImage() {
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="900" height="650" viewBox="0 0 900 650">
+        <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#dceee3"/><stop offset="1" stop-color="#f3e6c7"/></linearGradient></defs>
+        <rect width="900" height="650" fill="url(#g)"/>
+        <rect x="116" y="100" width="668" height="450" rx="34" fill="#fffdf8" opacity=".96"/>
+        <circle cx="210" cy="215" r="54" fill="#1f4f42"/><path d="M186 215h48M210 191v48" stroke="#d7f4c1" stroke-width="10" stroke-linecap="round"/>
+        <text x="290" y="204" fill="#1f2c27" font-family="Arial, sans-serif" font-size="42" font-weight="700">直接问这一口</text>
+        <text x="290" y="250" fill="#687a70" font-family="Arial, sans-serif" font-size="24">例如：一根香蕉大概多少卡？</text>
+        <rect x="176" y="321" width="548" height="62" rx="16" fill="#eef4ee"/>
+        <text x="205" y="361" fill="#31614f" font-family="Arial, sans-serif" font-size="24">把食物名、分量或实际吃了多少告诉我</text>
+        <text x="176" y="453" fill="#7a857e" font-family="Arial, sans-serif" font-size="22">也可以随后加订单、菜单或食物照片。</text>
+      </svg>`;
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   }
 
-  function updateImage(url, ownsObjectUrl = false) {
-    if (previewObjectUrl && previewObjectUrl !== url) revokePreviewUrl();
+  function revokePreviewUrls() {
+    previewObjectUrls.forEach((url) => {
+      try { URL.revokeObjectURL(url); } catch (_) { /* ignored */ }
+    });
+    previewObjectUrls = [];
+  }
+
+  // Kept as a small compatibility alias for older click paths.
+  function revokePreviewUrl() {
+    revokePreviewUrls();
+  }
+
+  function renderContextPhotoStrip(urls = []) {
+    const strip = $("contextPhotoStrip");
+    if (!strip) return;
+    strip.replaceChildren();
+    urls.slice(0, MAX_IMAGES).forEach((url, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `context-thumb${index === 0 ? " is-active" : ""}`;
+      button.setAttribute("aria-label", `查看第 ${index + 1} 张图片`);
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = "";
+      button.appendChild(image);
+      button.addEventListener("click", () => {
+        strip.querySelectorAll(".context-thumb").forEach((item) => item.classList.remove("is-active"));
+        button.classList.add("is-active");
+        contextPreview.src = url;
+      });
+      strip.appendChild(button);
+    });
+  }
+
+  function updateImage(url, ownsObjectUrl = false, urls = []) {
+    if (ownsObjectUrl) {
+      (urls.length ? urls : [url]).filter(Boolean).forEach((item) => {
+        if (!previewObjectUrls.includes(item)) previewObjectUrls.push(item);
+      });
+    }
     imageUrl = url || placeholderImage();
-    if (ownsObjectUrl) previewObjectUrl = imageUrl;
     contextPreview.src = imageUrl;
     scanPreview.src = imageUrl;
     resultPreview.src = imageUrl;
+    renderContextPhotoStrip(urls);
   }
 
-  function enterContext({ url, file, isDemo, ownsObjectUrl = false }) {
+  function enterContext({ url, urls = [], files = [], isDemo, textOnly = false, ownsObjectUrl = false }) {
     clearProcessing();
     analysisRun += 1;
-    selectedFile = file || null;
+    selectedFiles = Array.isArray(files) ? files.slice(0, MAX_IMAGES) : [];
     selectionIsDemo = Boolean(isDemo);
+    textOnlyMode = Boolean(textOnly);
     mealContext = "";
     requestedIntakeGrams = null;
     $("mealContext").value = "";
     $("intakeGrams").value = "";
-    $("contextPhotoBadge").textContent = selectionIsDemo ? "演示包装图" : "已选图片";
-    updateImage(url, ownsObjectUrl);
+    $("contextView").dataset.mode = textOnlyMode ? "text" : "image";
+    $("contextPhotoBadge").textContent = selectionIsDemo ? "演示包装图" : textOnlyMode ? "文字提问" : `${selectedFiles.length || 1} 张证据`;
+    $("contextImageCount").textContent = textOnlyMode ? "可以只输入文字，也可以随后加图" : `${selectedFiles.length || 1} / ${MAX_IMAGES} 张图片，可搭配订单、食物和营养表`;
+    $("contextEyebrow").textContent = textOnlyMode ? "文字提问 · 可加图片" : "补充一句 · 可不填";
+    $("contextTitle").innerHTML = textOnlyMode ? "想问哪种<strong>食物？</strong>" : "这次，<strong>吃了多少？</strong>";
+    $("contextDescription").textContent = textOnlyMode
+      ? "可以直接说食物名、品牌或你想知道的分量；如果有订单或照片，也能一起上传。"
+      : "一句食物名、订单菜品或克数，就能让结果更接近你真实吃下的这一份。";
+    const previewUrls = textOnlyMode ? [] : (urls.length ? urls : (url ? [url] : []));
+    updateImage(url || placeholderTextImage(), ownsObjectUrl, previewUrls);
     showView(contextView);
   }
 
   function resetToHome() {
     clearProcessing();
     analysisRun += 1;
-    selectedFile = null;
+    selectedFiles = [];
     selectionIsDemo = false;
+    textOnlyMode = false;
     mealContext = "";
     requestedIntakeGrams = null;
+    lastAnalysisPayload = null;
+    followupUsed = false;
     photoInput.value = "";
-    revokePreviewUrl();
-    updateImage(placeholderImage());
+    revokePreviewUrls();
+    $("contextView").dataset.mode = "image";
+    updateImage(placeholderImage(), false, []);
     showView(homeView);
   }
 
@@ -486,6 +559,84 @@
     nutrition.sodium = optionalNumber($("baseSodiumInput").value);
   }
 
+  function normalizeEvidenceType(value) {
+    const source = String(value || "").trim().toLowerCase().replace(/[\s/-]+/g, "_");
+    const aliases = {
+      packaged_food: "packaged_label",
+      label: "packaged_label",
+      food: "food_photo",
+      dish: "food_photo",
+      meal: "food_photo",
+      receipt: "order_or_receipt",
+      order: "order_or_receipt",
+      menu: "menu_or_listing",
+      text: "text_only",
+      mixed: "mixed_evidence",
+    };
+    return aliases[source] || source || "uncertain";
+  }
+
+  function evidencePresentation(analysis, source) {
+    const type = normalizeEvidenceType(analysis.evidenceType || analysis.inputKind);
+    const confidence = String(analysis.confidence || "").toLowerCase();
+    const sourceText = String(analysis.source || "").trim();
+    const labels = {
+      packaged_label: { badge: "标签读取 · 较准确", title: "标签读取 · 较准确", detail: "按营养成分表换算；仍可直接修改实际摄入量。" },
+      food_photo: { badge: "实物估算 · 可核对", title: "实物估算 · 建议确认分量", detail: "菜肴分量和用油会影响结果；克数可直接调整。" },
+      order_or_receipt: { badge: "订单/小票 · 菜单估算", title: "订单/小票识别 · 菜单估算", detail: "按订单菜品和常见规格估算，不等同于包装标签。" },
+      menu_or_listing: { badge: "菜单识别 · 菜单估算", title: "菜单识别 · 菜单估算", detail: "按菜品名称和常见规格估算；实际制作会有差异。" },
+      mixed_evidence: { badge: "多张证据 · 可核对", title: "多张证据交叉估算", detail: "已综合图片和补充信息；分量仍可直接调整。" },
+      text_only: { badge: "文字询问 · 通用估算", title: "文字询问 · 通用估算", detail: "没有看到实物或标签时，结果仅供快速参考。" },
+      uncertain: { badge: "信息有限 · 谨慎估算", title: "信息有限 · 建议补充", detail: "补一张更清晰的照片、订单或克数，结果会更接近实际。" },
+    };
+    const presentation = { ...(labels[type] || labels.uncertain) };
+    if (source === "demo") return labels.packaged_label;
+    if (sourceText) presentation.detail = `${sourceText}。${presentation.detail}`;
+    if (confidence === "low" && type !== "text_only" && type !== "uncertain") {
+      presentation.badge = "谨慎估算 · 建议补充";
+      presentation.title = "信息有限 · 建议补充";
+    }
+    return presentation;
+  }
+
+  function normalizeItems(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 10).map((item) => {
+      if (!isPlainObject(item)) return null;
+      const name = String(item.name || item.foodName || item.food_name || item.title || "").trim();
+      if (!name) return null;
+      const count = optionalNumber(item.count ?? item.quantity ?? item.servings);
+      const grams = optionalNumber(item.grams ?? item.weightGrams ?? item.weight_g);
+      return { name, count, grams };
+    }).filter(Boolean);
+  }
+
+  function renderEvidenceItems(analysis) {
+    const section = $("evidenceItemsSection");
+    const list = $("evidenceItems");
+    const items = Array.isArray(analysis.items) ? analysis.items : [];
+    list.replaceChildren();
+    $("evidenceSourceText").textContent = analysis.source || "识别依据";
+    if (!items.length) {
+      section.classList.add("is-hidden");
+      return;
+    }
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      li.append(document.createTextNode(item.name));
+      const notes = [];
+      if (item.count !== null && item.count !== undefined && item.count !== 1) notes.push(`${format(item.count, 1)} 份`);
+      if (item.grams !== null && item.grams !== undefined) notes.push(`约 ${formatInteger(item.grams)}g`);
+      if (notes.length) {
+        const meta = document.createElement("em");
+        meta.textContent = notes.join(" · ");
+        li.append(meta);
+      }
+      list.appendChild(li);
+    });
+    section.classList.remove("is-hidden");
+  }
+
   function normalizeAnalysis(payload, explicitIntakeGrams = null) {
     const raw = isPlainObject(payload && payload.data) ? payload.data : payload;
     if (!isPlainObject(raw)) throw new Error("识别服务返回的数据格式不正确");
@@ -509,7 +660,9 @@
     ));
     const intake = isPlainObject(raw.intake) ? raw.intake : {};
     const modelIntakeGrams = Math.max(1, number(
-      firstDefined(intake, ["grams", "totalGrams", "total_grams", "intakeGrams", "weightGrams", "weight_g"]) ?? firstDefined(raw, ["intakeGrams", "intake_grams", "totalGrams", "total_grams", "weightGrams", "weight_g"]),
+      firstDefined(intake, ["grams", "totalGrams", "total_grams", "intakeGrams", "weightGrams", "weight_g"])
+        ?? firstDefined(rawServing, ["intakeGrams", "intake_grams", "actualGrams", "actual_grams"])
+        ?? firstDefined(raw, ["intakeGrams", "intake_grams", "totalGrams", "total_grams", "weightGrams", "weight_g"]),
       grams * count,
     ));
     const intakeGrams = clampIntakeGrams(explicitIntakeGrams) || modelIntakeGrams;
@@ -526,6 +679,8 @@
         ? sourceEvaluations.split(/\n|；|;/)
         : [];
 
+    const evidenceType = normalizeEvidenceType(raw.evidenceType || raw.evidence_type || raw.inputKind || raw.input_kind);
+    const followup = isPlainObject(raw.followup) ? raw.followup : {};
     return {
       foodName: String(raw.foodName || raw.name || raw.title || "这一顿"),
       serving: { label: servingLabel, grams, count, scopeLabel, intakeGrams },
@@ -541,6 +696,13 @@
         ? raw.riceEquivalent
         : (isPlainObject(raw.rice_equivalent) ? raw.rice_equivalent : { text: raw.riceEquivalent || raw.rice_equivalent }),
       evaluations: normalizedEvaluations,
+      inputKind: String(raw.inputKind || raw.input_kind || "uncertain"),
+      evidenceType,
+      source: String(raw.source || raw.sourceLabel || raw.source_label || "").trim(),
+      confidence: String(raw.confidence || "").trim().toLowerCase(),
+      items: normalizeItems(raw.items || raw.foodItems || raw.food_items),
+      followupUsed: Boolean(raw.followupUsed || raw.followup_used || followup.used),
+      raw: raw,
     };
   }
 
@@ -554,6 +716,8 @@
     nutrition = { ...analysis.nutritionPerServing };
     riceEquivalent = isPlainObject(analysis.riceEquivalent) ? { ...analysis.riceEquivalent } : {};
     evaluations = Array.isArray(analysis.evaluations) ? [...analysis.evaluations] : [];
+    lastAnalysisPayload = isPlainObject(analysis.raw) ? analysis.raw : { ...analysis };
+    followupUsed = Boolean(analysis.followupUsed);
     analyzedIntakeGrams = Math.max(1, number(serving.intakeGrams, serving.grams));
     amount = analyzedIntakeGrams;
     maxAmount = Math.max(500, Math.min(20000, Math.ceil(amount / 50) * 50));
@@ -571,12 +735,16 @@
       ? `${serving.scopeLabel} · 已参考你的补充信息`
       : serving.scopeLabel;
     $("calorieLabel").textContent = "本次摄入能量";
-    $("resultSourceBadge").textContent = source === "live" ? "图像估算 · 可核对" : "演示标签 · 可编辑";
-    $("confidenceTitle").textContent = source === "live" ? "图像估算 · 建议确认分量" : "标签读取 · 较准确";
-    $("confidenceDetail").textContent = source === "live"
-      ? "菜肴分量和用油会影响结果；克数可直接调整。"
-      : "本次结果按包装标签换算；仍可直接修改实际摄入量。";
-    $("editDataTitle").textContent = `修改${serving.label}标签数据`;
+    const presentation = evidencePresentation(analysis, source);
+    $("resultSourceBadge").textContent = presentation.badge;
+    $("confidenceTitle").textContent = presentation.title;
+    $("confidenceDetail").textContent = presentation.detail;
+    $("editDataTitle").textContent = analysis.evidenceType === "packaged_label"
+      ? `修改${serving.label}标签数据`
+      : `修改${serving.label}估算数据`;
+    $("followupButton").disabled = followupUsed;
+    $("followupButton").textContent = followupUsed ? "已补充一次" : "不太准？补充一次";
+    renderEvidenceItems(analysis);
     resetBaseInputs();
     recalculate();
   }
@@ -587,27 +755,43 @@
     if (text) scanStatus.textContent = text;
   }
 
-  function startProgress(isDemo) {
-    $("scanKicker").textContent = isDemo ? "演示模式 · 本机生成结果" : "正在连接一口清楚";
-    $("scanTitle").childNodes[0].textContent = "正在读取营养信息";
-    $("previewBadge").textContent = isDemo ? "演示包装图" : "图片 + 补充说明";
-    $("scanTipText").textContent = isDemo
-      ? "这是可编辑的演示流程，不会调用识别服务。"
-      : "正在把图片和你的补充信息整理成“每份”的营养估算。";
-    setProgress(8, "先看看图片，再把数字整理成这一顿。");
-    const stages = [
-      [320, 30, "正在定位食物和营养成分表…"],
-      [880, 61, "正在按你的食用量计算…"],
-      [1560, 82, "正在生成米饭换算和营养评价…"],
-    ];
+  function startProgress(isDemo, { followup = false } = {}) {
+    const evidenceText = textOnlyMode
+      ? "文字询问"
+      : selectedFiles.length > 1
+        ? `${selectedFiles.length} 张图片 + 补充说明`
+        : "图片 + 补充说明";
+    $("scanKicker").textContent = followup
+      ? "正在按你的补充修正"
+      : isDemo ? "演示模式 · 本机生成结果" : "正在连接一口清楚";
+    $("scanTitle").childNodes[0].textContent = followup ? "正在重新计算这一顿" : "正在读取饮食信息";
+    $("previewBadge").textContent = followup ? "补充修正" : isDemo ? "演示包装图" : evidenceText;
+    $("scanTipText").textContent = followup
+      ? "只会按这一次补充修正结果，不会开启连续聊天。"
+      : isDemo
+        ? "这是可编辑的演示流程，不会调用识别服务。"
+        : "正在综合食物、包装、订单、小票和你的补充信息。";
+    setProgress(8, followup ? "正在读取你刚刚补充的内容。" : "先看看证据，再把数字整理成这一顿。");
+    const stages = followup
+      ? [
+        [320, 36, "正在对照上一份结果…"],
+        [880, 68, "正在按实际食用量重新计算…"],
+        [1560, 84, "正在更新米饭换算和营养评价…"],
+      ]
+      : [
+        [320, 30, "正在识别食物、订单或营养成分表…"],
+        [880, 61, "正在按你的食用量计算…"],
+        [1560, 82, "正在生成米饭换算和营养评价…"],
+      ];
     stages.forEach(([timeout, value, text]) => {
       const timer = window.setTimeout(() => setProgress(value, text), timeout);
       processingTimers.push(timer);
     });
   }
 
-  async function requestAnalysis(file, context, intakeGrams = null) {
-    if (!file) throw new Error("请先选择一张图片");
+  async function requestAnalysis(files, context, intakeGrams = null) {
+    const imageFiles = Array.isArray(files) ? files.filter(Boolean).slice(0, MAX_IMAGES) : [];
+    if (!imageFiles.length && !String(context || "").trim()) throw new Error("请先选图，或直接告诉我想问哪种食物");
     const controller = new AbortController();
     activeController = controller;
     // Keep timeout aborts distinguishable from an intentional abort caused by
@@ -620,8 +804,8 @@
       controller.abort();
     }, REQUEST_TIMEOUT_MS);
     const formData = new FormData();
-    formData.append("image", file, file.name || "meal.jpg");
-    formData.append("context", context);
+    imageFiles.forEach((file, index) => formData.append("image", file, file.name || `meal-${index + 1}.jpg`));
+    formData.append("context", context || "");
     const explicitIntakeGrams = clampIntakeGrams(intakeGrams);
     if (explicitIntakeGrams) formData.append("intakeGrams", String(explicitIntakeGrams));
     formData.append("locale", "zh-CN");
@@ -640,7 +824,7 @@
         error.code = isPlainObject(payload) ? payload.code : undefined;
         throw error;
       }
-      return normalizeAnalysis(payload);
+      return normalizeAnalysis(payload, explicitIntakeGrams);
     } catch (error) {
       if (error && error.name === "AbortError" && timedOut) {
         const timeoutError = new Error("识别服务响应超时，请稍后再试");
@@ -655,23 +839,90 @@
     }
   }
 
-  async function startAnalysis() {
+  async function requestFollowup(correction) {
+    if (!lastAnalysisPayload) throw new Error("请先得到一份分析结果，再补充一次");
+    const controller = new AbortController();
+    activeController = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+    const formData = new FormData();
+    formData.append("followup", "true");
+    formData.append("correction", correction);
+    formData.append("context", mealContext || "");
+    formData.append("previousAnalysis", JSON.stringify(lastAnalysisPayload));
+    formData.append("locale", "zh-CN");
+    try {
+      const response = await fetch(API_PATH, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: formData,
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = isPlainObject(payload) && typeof payload.error === "string" ? payload.error : `识别服务暂不可用（${response.status}）`;
+        const error = new Error(message);
+        error.code = response.status === 409 ? "FOLLOWUP_USED" : (isPlainObject(payload) ? payload.code : undefined);
+        throw error;
+      }
+      return normalizeAnalysis(payload);
+    } catch (error) {
+      if (error && error.name === "AbortError" && timedOut) {
+        const timeoutError = new Error("识别服务响应超时，请稍后再试");
+        timeoutError.code = "TIMEOUT";
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+      if (activeController === controller) activeController = null;
+    }
+  }
+
+  function buildDemoFollowup(correction) {
+    const copy = JSON.parse(JSON.stringify(demoAnalysis));
+    const halfPortion = /(?:一半|半份|半袋|半包|只吃了半)/.test(String(correction || ""));
+    const explicitGrams = parseRequestedIntakeGrams(correction);
+    const intakeGrams = explicitGrams || (halfPortion ? Math.max(1, Math.round(copy.serving.grams / 2)) : copy.serving.grams);
+    copy.serving.intakeGrams = intakeGrams;
+    copy.serving.scopeLabel = `按补充后的本次约 ${intakeGrams}g 估算`;
+    copy.evaluations = [
+      `已按你的补充重新估算本次约 ${intakeGrams}g。`,
+      ...copy.evaluations.slice(0, 2),
+    ];
+    copy.note = "演示模式：已按你的补充重新计算。";
+    copy.followupUsed = true;
+    copy.followup = { available: false, used: true, limit: 1 };
+    return normalizeAnalysis(copy);
+  }
+
+  async function startAnalysis({ followup = false, correction = "" } = {}) {
     clearProcessing();
     const run = ++analysisRun;
+    $("followupSheet").classList.add("is-hidden");
     showView(scanView);
-    startProgress(selectionIsDemo);
+    startProgress(selectionIsDemo, { followup });
     const startedAt = Date.now();
 
     try {
       const analysis = selectionIsDemo
-        ? (await delay(FALLBACK_DELAY_MS), normalizeAnalysis(demoAnalysis, requestedIntakeGrams))
-        : await requestAnalysis(selectedFile, mealContext, requestedIntakeGrams);
+        ? (await delay(FALLBACK_DELAY_MS), followup ? buildDemoFollowup(correction) : normalizeAnalysis(demoAnalysis, requestedIntakeGrams))
+        : followup
+          ? await requestFollowup(correction)
+          : await requestAnalysis(selectedFiles, mealContext, requestedIntakeGrams);
       if (run !== analysisRun) return;
-      setProgress(100, selectionIsDemo ? "演示结果已准备好" : "识别结果已准备好");
+      setProgress(100, followup ? "修正结果已准备好" : selectionIsDemo ? "演示结果已准备好" : "识别结果已准备好");
       await delay(230);
       if (run !== analysisRun) return;
       processingTimers = [];
-      applyAnalysis(analysis, selectionIsDemo ? "demo" : "live", requestedIntakeGrams);
+      if (followup) {
+        mealContext = [mealContext, `补充：${correction}`].filter(Boolean).join(" · ");
+        requestedIntakeGrams = null;
+      }
+      applyAnalysis(analysis, selectionIsDemo ? "demo" : "live", followup ? null : requestedIntakeGrams);
       showView(resultView);
     } catch (error) {
       // A stale run means the user cancelled/replaced the request; do not let
@@ -687,15 +938,21 @@
       // Stop progress-stage timers before displaying the error; otherwise a
       // late stage timer can overwrite the failure message while we wait.
       clearProcessing();
+      if (error.code === "FOLLOWUP_USED") {
+        processingTimers = [];
+        showView(resultView);
+        showToast(error.message || "这一顿已经补充过一次了");
+        return;
+      }
       if (error.code === "NOT_FOOD") {
-        $("scanKicker").textContent = "请重新拍一张";
-        setProgress(100, error.message || "这似乎不是食品、饮料或一份菜肴。");
-        $("scanTipText").textContent = "可以拍包装、营养成分表、饮料、水果，或一碗真实菜肴。";
+        $("scanKicker").textContent = "还差一点信息";
+        setProgress(100, error.message || "我没有找到和食物有关的信息。");
+        $("scanTipText").textContent = "可以拍食物、包装、订单/小票，或直接告诉我你想问哪种食物。";
         await delay(950);
         if (run !== analysisRun) return;
         processingTimers = [];
-        showView(contextView);
-        showToast(error.message || "这似乎不是食品、饮料或一份菜肴");
+        showView(followup ? resultView : contextView);
+        showToast(error.message || "我没有找到和食物有关的信息");
         return;
       }
       const remaining = Math.max(0, FALLBACK_DELAY_MS - (Date.now() - startedAt));
@@ -705,7 +962,7 @@
       await delay(remaining + 650);
       if (run !== analysisRun) return;
       processingTimers = [];
-      showView(contextView);
+      showView(followup ? resultView : contextView);
       showToast(error.message || "识别服务暂不可用，请稍后再试");
     }
   }
@@ -717,7 +974,12 @@
     showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2400);
   }
 
-  photoPickerButton.addEventListener("click", () => {
+  function openPhotoPicker({ append = false } = {}) {
+    if (append && selectedFiles.length >= MAX_IMAGES) {
+      showToast(`一次最多 ${MAX_IMAGES} 张图片；可以直接重新选一组图片`);
+      return;
+    }
+    appendPhotoSelection = Boolean(append);
     // This call remains directly inside the visible button's trusted click
     // gesture. It is more reliable in Android WebViews than a transparent
     // file input stretched over a styled element.
@@ -735,25 +997,53 @@
     } catch (_) {
       showToast("无法打开相册，请在浏览器中重新打开页面后再试");
     }
-  });
+  }
 
   photoInput.addEventListener("change", async (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
+    const incomingFiles = Array.from(event.target.files || []);
+    if (!incomingFiles.length) return;
     const selection = ++fileSelectionRun;
     photoInput.value = "";
     try {
-      const uploadFile = await prepareImageFile(file);
+      const capacity = appendPhotoSelection ? Math.max(0, MAX_IMAGES - selectedFiles.length) : MAX_IMAGES;
+      const limitedFiles = incomingFiles.slice(0, capacity);
+      if (incomingFiles.length > capacity) showToast(`一次最多使用 ${MAX_IMAGES} 张图片，已取前 ${capacity} 张`);
+      const preparedFiles = [];
+      for (const file of limitedFiles) preparedFiles.push(await prepareImageFile(file));
       if (selection !== fileSelectionRun) return;
-      const url = URL.createObjectURL(uploadFile);
-      enterContext({ url, file: uploadFile, isDemo: false, ownsObjectUrl: true });
+      const incomingUrls = preparedFiles.map((file) => URL.createObjectURL(file));
+      if (appendPhotoSelection && (selectedFiles.length || textOnlyMode)) {
+        const mergedFiles = [...selectedFiles, ...preparedFiles].slice(0, MAX_IMAGES);
+        const mergedUrls = [...(Array.from($("contextPhotoStrip").querySelectorAll("img")).map((image) => image.src)), ...incomingUrls].slice(0, MAX_IMAGES);
+        // Existing blob URLs are retained; only the newly-created URLs need to
+        // be added to the revocation list here.
+        previewObjectUrls.push(...incomingUrls);
+        selectedFiles = mergedFiles;
+        selectionIsDemo = false;
+        textOnlyMode = false;
+        $("contextView").dataset.mode = "image";
+        $("contextPhotoBadge").textContent = `${selectedFiles.length} 张证据`;
+        $("contextImageCount").textContent = `${selectedFiles.length} / ${MAX_IMAGES} 张图片，可搭配订单、食物和营养表`;
+        $("contextEyebrow").textContent = "补充一句 · 可不填";
+        $("contextTitle").innerHTML = "这次，<strong>吃了多少？</strong>";
+        $("contextDescription").textContent = "一句食物名、订单菜品或克数，就能让结果更接近你真实吃下的这一份。";
+        updateImage(mergedUrls[0], false, mergedUrls);
+        renderContextPhotoStrip(mergedUrls);
+      } else {
+        enterContext({ url: incomingUrls[0], urls: incomingUrls, files: preparedFiles, isDemo: false, ownsObjectUrl: true });
+      }
+      appendPhotoSelection = false;
     } catch (error) {
       if (selection !== fileSelectionRun) return;
+      appendPhotoSelection = false;
       showToast(error instanceof Error ? error.message : "图片读取失败，请换一张试试");
     }
   });
 
-  $("demoButton").addEventListener("click", () => enterContext({ url: placeholderImage(), file: null, isDemo: true }));
+  photoPickerButton.addEventListener("click", () => openPhotoPicker());
+  $("addMorePhotoButton").addEventListener("click", () => openPhotoPicker({ append: true }));
+  $("textEntryButton").addEventListener("click", () => enterContext({ url: placeholderTextImage(), urls: [], files: [], isDemo: false, textOnly: true }));
+  $("demoButton").addEventListener("click", () => enterContext({ url: placeholderImage(), urls: [placeholderImage()], files: [], isDemo: true }));
   $("backToHomeButton").addEventListener("click", resetToHome);
   $("mealContextForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -766,6 +1056,11 @@
       $("intakeGrams").focus();
       return;
     }
+    if (!selectionIsDemo && !selectedFiles.length && !mealContext) {
+      showToast("请告诉我想问哪种食物，或先选一张图片");
+      $("mealContext").focus();
+      return;
+    }
     startAnalysis();
   });
   $("cancelScanButton").addEventListener("click", () => {
@@ -775,6 +1070,29 @@
   });
   $("retakeTopButton").addEventListener("click", resetToHome);
   $("retakeButton").addEventListener("click", resetToHome);
+  $("followupButton").addEventListener("click", () => {
+    if (followupUsed) {
+      showToast("这一顿已经补充过一次了");
+      return;
+    }
+    const details = $("resultView").querySelector(".result-details-sheet");
+    if (details) details.open = false;
+    $("correctionInput").value = "";
+    $("followupSheet").classList.remove("is-hidden");
+    window.setTimeout(() => $("correctionInput").focus(), 80);
+  });
+  $("followupDismissButton").addEventListener("click", () => $("followupSheet").classList.add("is-hidden"));
+  $("followupSheet").querySelector(".followup-backdrop").addEventListener("click", () => $("followupSheet").classList.add("is-hidden"));
+  $("followupForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const correction = $("correctionInput").value.trim();
+    if (!correction) {
+      showToast("请补充一句实际情况，例如“只吃了一半”");
+      $("correctionInput").focus();
+      return;
+    }
+    startAnalysis({ followup: true, correction });
+  });
   amountSlider.addEventListener("input", () => {
     amountInput.value = amountSlider.value;
     recalculate();

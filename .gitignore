@@ -1,5 +1,7 @@
 .dev.vars
 .wrangler/
+.aliyun/
+cloudbase/
 node_modules/
 public/
 .DS_Store
